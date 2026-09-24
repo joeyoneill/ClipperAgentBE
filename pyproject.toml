@@ -1,0 +1,17 @@
+[project]
+name = "capstone-be"
+version = "0.1.0"
+description = "Google FDE capstone project: Clipper Agent Web application backend service"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "fastapi>=0.141.1",
+    "uvicorn>=0.53.0",
+]
+
+[project.scripts]
+capstone-be = "capstone_be:main"
+
+[build-system]
+requires = ["uv_build>=0.12.5,<0.13.0"]
+build-backend = "uv_build"
