@@ -21,7 +21,7 @@ class UserInfo(BaseModel):
 # Auth Dependency Function
 def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(security)
-) -> UserInfo | None:
+) -> UserInfo:
     token = credentials.credentials
     try:
         # Get Claims from jwt
