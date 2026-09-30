@@ -12,3 +12,6 @@ uv.lock
 
 # Environment variables
 .env
+
+# MISC
+scope.txt
