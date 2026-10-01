@@ -188,7 +188,7 @@ async def completed_upload(
 # POST: /api/lf_videos/upload/{video_id}/fail
 ################################################################
 
-@router.post("/{vid}/failed")
+@router.post("/{vid}/failed", response_model=LFVideo, status_code=status.HTTP_200_OK)
 async def failed_upload(
     vid: str,
     payload: LFUploadFailedRequest,
