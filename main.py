@@ -7,9 +7,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 import os
 
-# Routers
-from routes.chat import router as chat_router
-from routes.lf_videos import router as lf_videos_router
+# Custom Dependencies
+from routes import router as management_router
 
 # Load Env Vars
 load_dotenv()
@@ -27,9 +26,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Connect Routers
-app.include_router(chat_router)
-app.include_router(lf_videos_router)
+# Connect Management Router
+app.include_router(management_router)
 
 # Redirect to /docs
 @app.get("/", tags=["General"])

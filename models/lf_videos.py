@@ -33,12 +33,15 @@ class LFVideo(BaseModel):
     updated_at: datetime = Field(default_factory=get_utc_now)
 
 ################################################################
+# LF Video Upload Endpoint Models
+################################################################
 
 # Long-form Video Upload Request Model
 class LFUploadRequest(BaseModel):
     filename: str = Field(..., description="Original name of the video file")
     content_type: str = Field(..., description="MIME type of the video, e.g. 'video/mp4'")
     file_size_bytes: int | None = Field(None, description="Optional size of the file in bytes")
+    duration_seconds: int | None = Field(None, description="Optional video duration in seconds")
 
 # Long-form Video Upload Response Model
 class LFUploadResponse(BaseModel):
@@ -46,3 +49,14 @@ class LFUploadResponse(BaseModel):
     upload_url: str
     gcs_uri: str
     blob_path: str
+
+################################################################
+# Upload Failed Endpoint Models
+################################################################
+
+# Long-form Video Upload Failed Request Model
+class LFUploadFailedRequest(BaseModel):
+    error_msg: str = Field(
+        default="Upload failed or was aborted by client.",
+        description="Reason the upload failed"
+    )
