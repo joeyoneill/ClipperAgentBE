@@ -40,7 +40,7 @@ LFVIDEO_COLLECTION_NAME = os.environ["LFVIDEO_COLLECTION_NAME"]
 ################################################################
 
 @router.post("/init", response_model=LFUploadResponse, status_code=status.HTTP_201_CREATED)
-async def init_lf_video_upload(
+def init_lf_video_upload(
     request: Request,
     payload: LFUploadRequest,
     user: UserInfo = Depends(get_current_user)
@@ -128,7 +128,7 @@ async def init_lf_video_upload(
 ################################################################
 
 @router.post("/{vid}/complete", response_model=LFVideo, status_code=status.HTTP_200_OK)
-async def completed_upload(
+def completed_upload(
     vid: str,
     user: UserInfo = Depends(get_current_user)
 ) -> LFVideo:
@@ -185,11 +185,11 @@ async def completed_upload(
     return LFVideo(id=vid, **{**video_data, **updates})
 
 ################################################################
-# POST: /api/lf_videos/upload/{video_id}/fail
+# POST: /api/lf_videos/upload/{video_id}/failed
 ################################################################
 
 @router.post("/{vid}/failed", response_model=LFVideo, status_code=status.HTTP_200_OK)
-async def failed_upload(
+def failed_upload(
     vid: str,
     payload: LFUploadFailedRequest,
     user: UserInfo = Depends(get_current_user)
