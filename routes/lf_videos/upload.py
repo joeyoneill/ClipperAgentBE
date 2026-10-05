@@ -28,7 +28,7 @@ from utils.lf_videos import (
 from utils.misc import get_utc_now
 
 # Init Router
-router = APIRouter(prefix="/upload", tags=["Video Upload"])
+router = APIRouter(prefix="/upload", tags=["LFVideo Upload"])
 
 # Load Env Vars
 load_dotenv()
