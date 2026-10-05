@@ -20,7 +20,7 @@ load_dotenv()
 LFVIDEO_COLLECTION_NAME = os.environ["LFVIDEO_COLLECTION_NAME"]
 
 ################################################################
-# GET: /api/lf_videos
+# GET: /api/lf_videos/list
 ################################################################
 
 # Gets all of a user's LF video details
