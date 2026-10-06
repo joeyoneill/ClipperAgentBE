@@ -3,6 +3,7 @@
 # Imports
 from dotenv import load_dotenv
 from fastapi import HTTPException, status
+from google.cloud import run_v2
 import os
 
 # Custom Dependencies
@@ -11,6 +12,9 @@ from db import db
 # Load Env Vars
 load_dotenv()
 LFVIDEO_COLLECTION_NAME = os.environ["LFVIDEO_COLLECTION_NAME"]
+GCP_PROJECT_ID = os.environ["GCP_PROJECT_ID"]
+GCP_REGION = os.environ["GCP_REGION"]
+VIDEO_PROCESSOR_JOB_NAME = os.environ["VIDEO_PROCESSOR_JOB_NAME"]
 
 ################################################################
 # Allowed LF Video File Upload Types
@@ -62,3 +66,31 @@ def get_user_video_doc(video_id: str, uid: str):
             detail="You do not have permission to modify this video."
         )
     return doc_ref, video_data
+
+################################################################
+# Helper: Triggers Video Processing Cloud Run Job
+################################################################
+
+# Init Run Jobs Client
+run_jobs_client = run_v2.JobsClient()
+
+
+def trigger_video_processor_job(vid: str, uid: str) -> None:
+    """
+    Triggers an async Cloud Run Job execution passing --video-id and --uid.
+    Returns immediately once Cloud Run queues the execution.
+    """
+    job_path = (
+        f"projects/{GCP_PROJECT_ID}/locations/{GCP_REGION}/jobs/{VIDEO_PROCESSOR_JOB_NAME}"
+    )
+    request = run_v2.RunJobRequest(
+        name=job_path,
+        overrides=run_v2.RunJobRequest.Overrides(
+            container_overrides=[
+                run_v2.RunJobRequest.Overrides.ContainerOverride(
+                    args=["--video-id", vid, "--uid", uid],
+                )
+            ]
+        ),
+    )
+    run_jobs_client.run_job(request=request)

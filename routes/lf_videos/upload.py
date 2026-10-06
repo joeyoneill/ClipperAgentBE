@@ -23,7 +23,8 @@ from storage import gcs_client
 from utils.auth import UserInfo, get_current_user
 from utils.lf_videos import (
     ALLOWED_VIDEO_TYPES,
-    get_user_video_doc
+    get_user_video_doc,
+    trigger_video_processor_job
 )
 from utils.misc import get_utc_now
 
@@ -169,8 +170,8 @@ def completed_upload(
 
     # Update Firestore state
     updates = {
-        "status": "SUCCESSFUL",
-        "is_complete": True,
+        "status": "PROCESSING",
+        "is_complete": False,
         "error_msg": None,
         "file_size_bytes": blob.size or video_data.get("file_size_bytes"),
         "updated_at": get_utc_now(),
@@ -182,6 +183,23 @@ def completed_upload(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to update DB record: {e}"
         )
+
+    # Trigger Video Processing Async
+    try:
+        trigger_video_processor_job(vid=vid, uid=user.uid)
+    except Exception as e:
+        fail_updates = {
+            "status": "FAILED",
+            "is_complete": False,
+            "error_msg": f"Failed to trigger video processor job: {e}",
+            "updated_at": get_utc_now(),
+        }
+        doc_ref.update(fail_updates)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to trigger video processor job: {e}"
+        )
+    
     return LFVideo(id=vid, **{**video_data, **updates})
 
 ################################################################

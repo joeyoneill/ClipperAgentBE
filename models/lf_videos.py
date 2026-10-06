@@ -60,3 +60,35 @@ class LFUploadFailedRequest(BaseModel):
         default="Upload failed or was aborted by client.",
         description="Reason the upload failed"
     )
+
+################################################################
+# RAG Segment Models
+################################################################
+
+# Transcribed text timestamps from Speech-to-text API
+class WordTimestamp(BaseModel):
+    word: str
+    start_offset: float
+    end_offset: float
+
+# Processed Time-Window Segment for Vector Retrieval
+class LFVideoSegment(BaseModel):
+    id: str | None = None
+    video_id: str
+    uid: str
+    segment_index: int = Field(..., description="0-based index of the segment in the video")
+    
+    # Time Window (in seconds)
+    start_offset: float
+    end_offset: float
+
+    # Audio / Transcript Data for this Window
+    transcript_text: str = ""
+    words: list[WordTimestamp] = Field(default_factory=list)
+    
+    # 1408-dim Shared Vector Space Embeddings (multimodalembedding@001)
+    video_embedding: list[float] | None = None
+    text_embedding: list[float] | None = None
+    
+    # Timestamp
+    created_at: datetime = Field(default_factory=get_utc_now)
