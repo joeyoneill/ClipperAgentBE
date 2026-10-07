@@ -9,5 +9,5 @@ from pydantic import BaseModel
 
 class WordTimestamp(BaseModel):
     word: str
-    start_offset: float
-    end_offset: float
+    start_sec: float
+    end_sec: float

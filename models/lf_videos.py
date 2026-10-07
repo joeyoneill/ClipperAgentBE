@@ -74,8 +74,8 @@ class LFVideoSegment(BaseModel):
     segment_index: int = Field(..., description="0-based index of the segment in the video")
     
     # Time Window (in seconds)
-    start_offset: float
-    end_offset: float
+    start_sec: float
+    end_sec: float
 
     # Audio / Transcript Data for this Window
     transcript_text: str = ""
