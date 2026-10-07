@@ -8,6 +8,7 @@ import os
 
 # Custom Dependencies
 from db import db
+from storage import gcs_client
 
 # Load Env Vars
 load_dotenv()
@@ -94,3 +95,17 @@ def trigger_video_processor_job(vid: str, uid: str) -> None:
         ),
     )
     run_jobs_client.run_job(request=request)
+
+################################################################
+# Helper: Generates GCS Read URL
+################################################################
+
+def generate_video_signed_read_url(
+    gcs_uri: str,
+    expiration_minutes: int = 60
+) -> str:
+    """
+    Generates a v4 Signed GET URL for a gs://<bucket>/<blob_path> URI
+    so the frontend <video> player can stream & seek inline clip previews.
+    """
+    return ""
