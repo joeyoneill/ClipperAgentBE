@@ -9,7 +9,7 @@ from uuid import uuid4
 
 # Custom Dependencies
 from agents.orchestrator.agent import orchestrator_agent
-from models.chat import ChatRequest
+from models.chat import LegacyChatRequest
 
 # Load Env Vars
 load_dotenv()
@@ -22,7 +22,7 @@ session_service = InMemorySessionService()
 
 # Main Orchestrator Non-streamable Response Endpoint
 @router.post("", tags=["Chat"])
-async def agent_response(payload: ChatRequest):
+async def agent_response(payload: LegacyChatRequest):
     app_name = "testApp"
 
     # check for session

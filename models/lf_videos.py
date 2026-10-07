@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 from typing import Literal
 
 # Custom Dependencies
+from models.misc import WordTimestamp
 from utils.misc import get_utc_now
 
 ################################################################
@@ -62,14 +63,8 @@ class LFUploadFailedRequest(BaseModel):
     )
 
 ################################################################
-# RAG Segment Models
+# RAG Segment Model
 ################################################################
-
-# Transcribed text timestamps from Speech-to-text API
-class WordTimestamp(BaseModel):
-    word: str
-    start_offset: float
-    end_offset: float
 
 # Processed Time-Window Segment for Vector Retrieval
 class LFVideoSegment(BaseModel):
