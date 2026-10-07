@@ -8,7 +8,7 @@ from google.genai.types import Content, Part
 from uuid import uuid4
 
 # Custom Dependencies
-from agents.orchestrator.agent import orchestrator_agent
+from agent.agent import orchestrator_agent
 from models.chat import ChatRequest
 
 # Load Env Vars

@@ -107,6 +107,8 @@ def session_to_chat_detail(session: Session) -> ChatSessionDetail:
 
         # 1. User Message Event
         if ev.author == "user":
+            if ev.branch:
+                continue
             if current_model_msg is not None:
                 messages.append(current_model_msg)
                 current_model_msg = None
@@ -196,7 +198,7 @@ def session_to_chat_detail(session: Session) -> ChatSessionDetail:
                     all_candidates.append(cand)
 
             # D. Visible Assistant Text Part
-            elif part.text:
+            elif part.text and not ev.branch:
                 current_model_msg.text += part.text
 
     if current_model_msg is not None:
