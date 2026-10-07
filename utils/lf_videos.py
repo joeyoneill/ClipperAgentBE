@@ -1,8 +1,11 @@
 # Helper Utils for Long-form Video Routes File
 
 # Imports
+from datetime import timedelta
 from dotenv import load_dotenv
 from fastapi import HTTPException, status
+from google.auth import default as google_auth_default
+from google.auth.transport import requests as google_requests
 from google.cloud import run_v2
 import os
 
@@ -15,6 +18,7 @@ load_dotenv()
 LFVIDEO_COLLECTION_NAME = os.environ["LFVIDEO_COLLECTION_NAME"]
 GCP_PROJECT_ID = os.environ["GCP_PROJECT_ID"]
 GCP_REGION = os.environ["GCP_REGION"]
+GCS_ROOT_BUCKET_NAME = os.environ["GCS_ROOT_BUCKET_NAME"]
 VIDEO_PROCESSOR_JOB_NAME = os.environ["VIDEO_PROCESSOR_JOB_NAME"]
 
 ################################################################
@@ -108,4 +112,29 @@ def generate_video_signed_read_url(
     Generates a v4 Signed GET URL for a gs://<bucket>/<blob_path> URI
     so the frontend <video> player can stream & seek inline clip previews.
     """
-    return ""
+    bucket_prefix = f"gs://{GCS_ROOT_BUCKET_NAME}/"
+    if not gcs_uri.startswith(bucket_prefix):
+        raise ValueError(f"Invalid GCS URI")
+
+    blob_path = gcs_uri.removeprefix(bucket_prefix)
+    bucket = gcs_client.bucket(GCS_ROOT_BUCKET_NAME)
+    blob = bucket.blob(blob_path)
+
+    # Works directly when using a Service Account JSON key; falls back to IAM signBlob on Cloud Run
+    credentials, _ = google_auth_default()
+    if hasattr(credentials, "sign_bytes"):
+        return blob.generate_signed_url(
+            version="v4",
+            expiration=timedelta(minutes=expiration_minutes),
+            method="GET",
+        )
+    # Refresh token for Cloud Run / compute credentials IAM signing
+    auth_request = google_requests.Request()
+    credentials.refresh(auth_request)
+    return blob.generate_signed_url(
+        version="v4",
+        expiration=timedelta(minutes=expiration_minutes),
+        method="GET",
+        service_account_email=getattr(credentials, "service_account_email", None),
+        access_token=credentials.token,
+    )
