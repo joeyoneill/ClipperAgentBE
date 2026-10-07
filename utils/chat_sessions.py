@@ -1,435 +1,251 @@
-# Firestore-backed ADK SessionService & Chat History Manager
+# ADK FirestoreSessionService Initialization & UI Converters
 
 # Imports
+from datetime import datetime, timezone
 from dotenv import load_dotenv
-from fastapi import HTTPException, status
-from google.adk.events.event import Event
-from google.adk.sessions.base_session_service import (
-    BaseSessionService,
-    GetSessionConfig,
-    ListSessionsResponse,
+from google.adk.events import Event, EventActions
+from google.adk.integrations.firestore.firestore_session_service import (
+    FirestoreSessionService,
 )
 from google.adk.sessions.session import Session
-from google.adk.sessions.state import State
 from google.cloud import firestore
-from google.cloud.firestore_v1.base_query import FieldFilter
-from typing import Any, Optional
+from typing import Any
 from uuid import uuid4
 import os
+import time
 
 # Custom Dependencies
 from db import db
 from models.chat import (
+    AgentTraceStep,
     ChatMessageModel,
     ChatSessionDetail,
     ChatSessionSummary,
+    ClipCandidate,
 )
 from utils.lf_videos import generate_video_signed_read_url
 from utils.misc import get_utc_now
 
 # Load Env Vars
 load_dotenv()
+GCP_PROJECT_ID = os.environ["GCP_PROJECT_ID"]
 CHAT_SESSION_COLLECTION_NAME = os.environ["CHAT_SESSION_COLLECTION_NAME"]
 LFVIDEO_COLLECTION_NAME = os.environ["LFVIDEO_COLLECTION_NAME"]
-
-# Subcollection Names under `chat_sessions/{session_id}`
-ADK_EVENTS_SUBCOLLECTION = "adk_events"
-UI_MESSAGES_SUBCOLLECTION = "messages"
+CHAT_APP_NAME = "clipping_studio"
 
 ################################################################
-# Firestore ADK Session Service
+# Prebuilt ADK Firestore Session Service Singleton
 ################################################################
 
-class FirestoreSessionService(BaseSessionService):
+session_service = FirestoreSessionService(
+    client=firestore.AsyncClient(project=GCP_PROJECT_ID),
+    root_collection=CHAT_SESSION_COLLECTION_NAME,
+)
+
+################################################################
+# Session -> UI Model Converters
+################################################################
+
+def _ts_to_datetime(ts: float | None) -> datetime:
+    if not ts:
+        return get_utc_now()
+    return datetime.fromtimestamp(ts, tz=timezone.utc)
+
+
+def session_to_chat_summary(session: Session) -> ChatSessionSummary:
     """
-    Persists ADK Session metadata in `chat_sessions/{session_id}`,
-    raw ADK Events in `chat_sessions/{session_id}/adk_events/{event_id}`,
-    and UI ChatMessageModels (with full traces) in `chat_sessions/{session_id}/messages/{msg_id}`.
-    Enforces strict user ownership (uid) on all operations.
+    Converts an ADK Session into a lightweight ChatSessionSummary for the sidebar.
+    Reads `title` and `selected_video_ids` from `session.state`.
     """
+    state = session.state or {}
+    updated_dt = _ts_to_datetime(session.last_update_time)
+    created_iso = state.get("created_at")
+    created_dt = (
+        datetime.fromisoformat(created_iso)
+        if isinstance(created_iso, str)
+        else updated_dt
+    )
 
-    def __init__(self, collection_name: str = CHAT_SESSION_COLLECTION_NAME):
-        self.collection_name = collection_name
-
-
-    @property
-    def _collection(self):
-        return db.collection(self.collection_name)
-
-
-    @staticmethod
-    def _clean_state_for_storage(state: dict[str, Any]) -> dict[str, Any]:
-        """Strips ephemeral 'temp:' keys before persisting state to Firestore."""
-        return {
-            k: v
-            for k, v in (state or {}).items()
-            if not str(k).startswith(State.TEMP_PREFIX)
-        }
-
-
-    @staticmethod
-    def _delete_subcollection(
-        parent_ref: firestore.DocumentReference, subcollection_name: str
-    ) -> None:
-        """Deletes all documents in a subcollection in batches of 400."""
-        sub_ref = parent_ref.collection(subcollection_name)
-        batch = db.batch()
-        op_count = 0
-
-        for doc in sub_ref.stream():
-            batch.delete(doc.reference)
-            op_count += 1
-            if op_count >= 400:
-                batch.commit()
-                batch = db.batch()
-                op_count = 0
-
-        if op_count > 0:
-            batch.commit()
-
-    ############################################################
-    # Core ADK BaseSessionService Methods (Used by ADK Runner)
-    ############################################################
-
-    async def create_session(
-        self,
-        *,
-        app_name: str,
-        user_id: str,
-        state: Optional[dict[str, Any]] = None,
-        session_id: Optional[str] = None,
-    ) -> Session:
-        sid = session_id or str(uuid4())
-        now = get_utc_now()
-        now_ts = now.timestamp()
-
-        initial_state = self._clean_state_for_storage(state or {})
-        initial_state["uid"] = user_id
-        selected_vids = initial_state.get("selected_video_ids", [])
-        title = initial_state.get("title") or "NEW CLIPPING LOG"
-
-        doc_data = {
-            "id": sid,
-            "app_name": app_name,
-            "uid": user_id,
-            "title": title,
-            "selected_video_ids": selected_vids,
-            "state": initial_state,
-            "message_count": 0,
-            "created_at": now,
-            "updated_at": now,
-        }
-        self._collection.document(sid).set(doc_data)
-
-        return Session(
-            id=sid,
-            app_name=app_name,
-            user_id=user_id,
-            state=dict(initial_state),
-            events=[],
-            last_update_time=now_ts,
-        )
+    return ChatSessionSummary(
+        id=session.id,
+        uid=session.user_id,
+        title=state.get("title", "NEW CLIPPING LOG"),
+        selected_video_ids=state.get("selected_video_ids", []),
+        created_at=created_dt,
+        updated_at=updated_dt,
+    )
 
 
-    async def get_session(
-        self,
-        *,
-        app_name: str,
-        user_id: str,
-        session_id: str,
-        config: Optional[GetSessionConfig] = None,
-    ) -> Optional[Session]:
-        doc_ref = self._collection.document(session_id)
-        doc_snap = doc_ref.get()
-        if not doc_snap.exists:
-            return None
+def session_to_chat_detail(session: Session) -> ChatSessionDetail:
+    """
+    Reconstructs the React UI's `list[ChatMessageModel]` (including full
+    `trace: list[AgentTraceStep]` and `clip_candidates: list[ClipCandidate]`)
+    directly from ADK's persisted `session.events`.
+    """
+    summary = session_to_chat_summary(session)
+    messages: list[ChatMessageModel] = []
+    all_candidates: list[ClipCandidate] = []
 
-        data = doc_snap.to_dict() or {}
-        if data.get("uid") != user_id:
-            # Strict tenant isolation: never return another user's session
-            return None
+    # Current in-progress assistant message bubble being assembled for a turn
+    current_model_msg: ChatMessageModel | None = None
 
-        # Stream full event history from the `adk_events` subcollection ordered by timestamp
-        events_query = doc_ref.collection(ADK_EVENTS_SUBCOLLECTION).order_by(
-            "timestamp", direction=firestore.Query.ASCENDING
-        )
-        events: list[Event] = []
-        for ev_doc in events_query.stream():
-            raw_ev = ev_doc.to_dict() or {}
-            try:
-                events.append(Event.model_validate(raw_ev))
-            except Exception:
-                continue
+    for ev in session.events:
+        ev_dt = _ts_to_datetime(ev.timestamp)
 
-        if config:
-            if config.after_timestamp is not None:
-                events = [
-                    e for e in events if (e.timestamp or 0.0) >= config.after_timestamp
-                ]
-            if config.num_recent_events is not None:
-                events = (
-                    events[-config.num_recent_events :]
-                    if config.num_recent_events > 0
-                    else []
-                )
-
-        state = data.get("state") or {}
-        state["uid"] = user_id
-        state["selected_video_ids"] = data.get("selected_video_ids", [])
-
-        updated_at = data.get("updated_at")
-        last_update_ts = (
-            updated_at.timestamp() if updated_at is not None and hasattr(updated_at, "timestamp") else 0.0
-        )
-
-        return Session(
-            id=session_id,
-            app_name=data.get("app_name", app_name),
-            user_id=user_id,
-            state=state,
-            events=events,
-            last_update_time=last_update_ts,
-        )
-
-
-    async def list_sessions(
-        self,
-        *,
-        app_name: str,
-        user_id: Optional[str] = None,
-    ) -> ListSessionsResponse:
-        query = self._collection.where(filter=FieldFilter("app_name", "==", app_name))
-        if user_id:
-            query = query.where(filter=FieldFilter("uid", "==", user_id))
-
-        sessions: list[Session] = []
-        for doc in query.stream():
-            d = doc.to_dict() or {}
-            updated_at = d.get("updated_at")
-            ts = updated_at.timestamp() if updated_at is not None and hasattr(updated_at, "timestamp") else 0.0
-            sessions.append(
-                Session(
-                    id=doc.id,
-                    app_name=d.get("app_name", app_name),
-                    user_id=d.get("uid", ""),
-                    state={},
-                    events=[],
-                    last_update_time=ts,
-                )
-            )
-        sessions.sort(key=lambda s: s.last_update_time)
-        return ListSessionsResponse(sessions=sessions)
-
-
-    async def delete_session(
-        self,
-        *,
-        app_name: str,
-        user_id: str,
-        session_id: str,
-    ) -> None:
-        doc_ref = self._collection.document(session_id)
-        doc_snap = doc_ref.get()
-        if not doc_snap.exists:
-            return
-        data = doc_snap.to_dict() or {}
-        if data.get("uid") != user_id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Not authorized to delete this chat session.",
-            )
-
-        # Delete both subcollections first, then the parent session document
-        self._delete_subcollection(doc_ref, ADK_EVENTS_SUBCOLLECTION)
-        self._delete_subcollection(doc_ref, UI_MESSAGES_SUBCOLLECTION)
-        doc_ref.delete()
-
-
-    async def append_event(self, session: Session, event: Event) -> Event:
-        event = await super().append_event(session, event)
-        if event.partial:
-            return event
-
-        doc_ref = self._collection.document(session.id)
-        event_id = event.id or str(uuid4())
-        serialized_event = event.model_dump(
-            mode="json", by_alias=True, exclude_none=True
-        )
-
-        # Write the new event document to `chat_sessions/{sid}/adk_events/{event_id}`
-        doc_ref.collection(ADK_EVENTS_SUBCOLLECTION).document(event_id).set(
-            serialized_event
-        )
-
-        # Update parent session state & timestamp
-        clean_state = self._clean_state_for_storage(session.state)
-        doc_ref.update(
-            {
-                "state": clean_state,
-                "selected_video_ids": clean_state.get("selected_video_ids", []),
-                "updated_at": get_utc_now(),
-            }
-        )
-        return event
-
-    ############################################################
-    # UI Session & Message Helpers (Used by FastAPI Routes)
-    ############################################################
-
-    def get_verified_session_doc(
-        self, session_id: str, uid: str
-    ) -> tuple[firestore.DocumentReference, dict[str, Any]]:
-        """Fetches the parent session doc and verifies ownership by `uid`."""
-        doc_ref = self._collection.document(session_id)
-        doc_snap = doc_ref.get()
-        if not doc_snap.exists:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Chat session '{session_id}' not found.",
-            )
-        data = doc_snap.to_dict() or {}
-        if data.get("uid") != uid:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="You do not have permission to access this chat session.",
-            )
-        return doc_ref, data
-
-
-    def list_user_sessions(self, uid: str) -> list[ChatSessionSummary]:
-        """Returns lightweight session summaries for the left sidebar."""
-        query = self._collection.where(filter=FieldFilter("uid", "==", uid)).order_by(
-            "updated_at", direction=firestore.Query.DESCENDING
-        )
-        results: list[ChatSessionSummary] = []
-        for doc in query.stream():
-            d = doc.to_dict() or {}
-            results.append(
-                ChatSessionSummary(
-                    id=doc.id,
-                    uid=d.get("uid", uid),
-                    title=d.get("title", "NEW CLIPPING LOG"),
-                    selected_video_ids=d.get("selected_video_ids", []),
-                    created_at=d.get("created_at") or get_utc_now(),
-                    updated_at=d.get("updated_at") or get_utc_now(),
-                )
-            )
-        return results
-
-
-    def get_user_session_detail(self, session_id: str, uid: str) -> ChatSessionDetail:
-        """
-        Streams full UI messages from `chat_sessions/{sid}/messages` subcollection
-        and refreshes GCS signed URLs on any ClipCandidates.
-        """
-        doc_ref, data = self.get_verified_session_doc(session_id, uid)
-
-        msgs_query = doc_ref.collection(UI_MESSAGES_SUBCOLLECTION).order_by(
-            "created_at", direction=firestore.Query.ASCENDING
-        )
-
-        signed_url_cache: dict[str, str] = {}
-        messages: list[ChatMessageModel] = []
-
-        for msg_doc in msgs_query.stream():
-            raw_msg = msg_doc.to_dict() or {}
-            msg = ChatMessageModel.model_validate(raw_msg)
-            for cand in msg.clip_candidates:
-                if cand.video_id not in signed_url_cache:
-                    vid_snap = (
-                        db.collection(LFVIDEO_COLLECTION_NAME)
-                        .document(cand.video_id)
-                        .get()
-                    )
-                    if vid_snap.exists:
-                        vid_data = vid_snap.to_dict() or {}
-                        if vid_data.get("uid") == uid and vid_data.get("gcs_uri"):
-                            try:
-                                signed_url_cache[cand.video_id] = (
-                                    generate_video_signed_read_url(vid_data["gcs_uri"])
-                                )
-                            except Exception:
-                                signed_url_cache[cand.video_id] = ""
-                if signed_url_cache.get(cand.video_id):
-                    cand.preview_url = signed_url_cache[cand.video_id]
-            messages.append(msg)
-
-        return ChatSessionDetail(
-            id=session_id,
-            uid=uid,
-            title=data.get("title", "NEW CLIPPING LOG"),
-            selected_video_ids=data.get("selected_video_ids", []),
-            created_at=data.get("created_at") or get_utc_now(),
-            updated_at=data.get("updated_at") or get_utc_now(),
-            messages=messages,
-        )
-
-
-    def update_user_session(
-        self,
-        session_id: str,
-        uid: str,
-        title: str | None = None,
-        selected_video_ids: list[str] | None = None,
-    ) -> ChatSessionSummary:
-        """Updates session title or pinned video scope (`selected_video_ids`)."""
-        doc_ref, data = self.get_verified_session_doc(session_id, uid)
-        now = get_utc_now()
-        updates: dict[str, Any] = {"updated_at": now}
-
-        if title is not None:
-            updates["title"] = title.strip() or "NEW CLIPPING LOG"
-        if selected_video_ids is not None:
-            updates["selected_video_ids"] = selected_video_ids
-            state = data.get("state") or {}
-            state["selected_video_ids"] = selected_video_ids
-            updates["state"] = state
-
-        doc_ref.update(updates)
-        merged = {**data, **updates}
-        return ChatSessionSummary(
-            id=session_id,
-            uid=uid,
-            title=merged.get("title", "NEW CLIPPING LOG"),
-            selected_video_ids=merged.get("selected_video_ids", []),
-            created_at=merged.get("created_at") or now,
-            updated_at=now,
-        )
-
-
-    def append_ui_message(
-        self,
-        session_id: str,
-        uid: str,
-        message: ChatMessageModel,
-        auto_title_from_user_text: str | None = None,
-    ) -> None:
-        """Writes a ChatMessageModel document into `chat_sessions/{sid}/messages/{msg_id}`."""
-        doc_ref, data = self.get_verified_session_doc(session_id, uid)
-
-        # 1. Write the UI message (with full trace & clip_candidates) to the subcollection
-        msg_id = message.id or str(uuid4())
-        doc_ref.collection(UI_MESSAGES_SUBCOLLECTION).document(msg_id).set(
-            message.model_dump(mode="json")
-        )
-
-        # 2. Update parent session metadata (and auto-title on first message)
-        msg_count = int(data.get("message_count", 0)) + 1
-        updates: dict[str, Any] = {
-            "message_count": msg_count,
-            "updated_at": get_utc_now(),
-        }
-
-        current_title = data.get("title", "NEW CLIPPING LOG")
+        # Check if this event marks the current turn as interrupted
         if (
-            auto_title_from_user_text
-            and current_title == "NEW CLIPPING LOG"
-            and msg_count <= 2
+            ev.actions
+            and ev.actions.state_delta
+            and ev.actions.state_delta.get("last_turn_interrupted")
+            and current_model_msg is not None
         ):
-            cleaned = " ".join(auto_title_from_user_text.strip().split())
-            updates["title"] = (cleaned[:42] + "...") if len(cleaned) > 45 else cleaned
+            current_model_msg.interrupted = True
 
-        doc_ref.update(updates)
+        # Skip pure state-delta / system events that have no content parts
+        if ev.author == "system" or not ev.content or not ev.content.parts:
+            continue
 
-# Singleton instance for routes
-firestore_session_service = FirestoreSessionService()
+        # 1. User Message Event
+        if ev.author == "user":
+            if current_model_msg is not None:
+                messages.append(current_model_msg)
+                current_model_msg = None
+
+            user_text_parts = [
+                p.text
+                for p in ev.content.parts
+                if p.text and not getattr(p, "thought", False)
+            ]
+            messages.append(
+                ChatMessageModel(
+                    id=ev.id or str(uuid4()),
+                    role="user",
+                    text="".join(user_text_parts),
+                    created_at=ev_dt,
+                )
+            )
+            continue
+
+        # 2. Agent / Tool Event -> Ensure we have an active model message bubble
+        if current_model_msg is None:
+            current_model_msg = ChatMessageModel(
+                id=ev.id or str(uuid4()),
+                role="model",
+                text="",
+                trace=[],
+                clip_candidates=[],
+                interrupted=False,
+                created_at=ev_dt,
+            )
+
+        for part in ev.content.parts:
+            # A. Model Thought / Reasoning Part (coalesce consecutive thought parts)
+            if getattr(part, "thought", False) and part.text:
+                if (
+                    current_model_msg.trace
+                    and current_model_msg.trace[-1].step_type == "THOUGHT"
+                ):
+                    current_model_msg.trace[-1].content = (
+                        current_model_msg.trace[-1].content or ""
+                    ) + part.text
+                else:
+                    current_model_msg.trace.append(
+                        AgentTraceStep(
+                            id=str(uuid4()),
+                            step_type="THOUGHT",
+                            title="AGENT REASONING",
+                            content=part.text,
+                            created_at=ev_dt,
+                        )
+                    )
+
+            # B. Tool Call Part
+            elif part.function_call:
+                fc = part.function_call
+                current_model_msg.trace.append(
+                    AgentTraceStep(
+                        id=fc.id or str(uuid4()),
+                        step_type="TOOL_CALL",
+                        title=f"CALLING {fc.name}",
+                        tool_name=fc.name,
+                        tool_args=dict(fc.args) if fc.args else {},
+                        created_at=ev_dt,
+                    )
+                )
+
+            # C. Tool Result Part
+            elif part.function_response:
+                fr = part.function_response
+                resp_dict = dict(fr.response) if fr.response else {}
+
+                current_model_msg.trace.append(
+                    AgentTraceStep(
+                        id=fr.id or str(uuid4()),
+                        step_type="TOOL_RESULT",
+                        title=f"COMPLETED {fr.name}",
+                        tool_name=fr.name,
+                        tool_summary=resp_dict.get("summary") or resp_dict,
+                        created_at=ev_dt,
+                    )
+                )
+
+                # Collect ClipCandidate cards; we batch-sign their URLs after the loop
+                if fr.name == "propose_clip_candidate" and "candidate" in resp_dict:
+                    cand = ClipCandidate.model_validate(resp_dict["candidate"])
+                    current_model_msg.clip_candidates.append(cand)
+                    all_candidates.append(cand)
+
+            # D. Visible Assistant Text Part
+            elif part.text:
+                current_model_msg.text += part.text
+
+    if current_model_msg is not None:
+        messages.append(current_model_msg)
+
+    # Batch-fetch all referenced LFVideo docs in 1 Firestore RPC & sign preview URLs
+    if all_candidates:
+        unique_vids = {c.video_id for c in all_candidates}
+        doc_refs = [
+            db.collection(LFVIDEO_COLLECTION_NAME).document(vid)
+            for vid in unique_vids
+        ]
+        signed_url_map: dict[str, str] = {}
+        for snap in db.get_all(doc_refs):
+            if not snap.exists:
+                continue
+            vdata = snap.to_dict() or {}
+            if vdata.get("uid") == session.user_id and vdata.get("gcs_uri"):
+                try:
+                    signed_url_map[snap.id] = generate_video_signed_read_url(
+                        vdata["gcs_uri"]
+                    )
+                except Exception:
+                    pass
+
+        for cand in all_candidates:
+            if cand.video_id in signed_url_map:
+                cand.preview_url = signed_url_map[cand.video_id]
+
+    return ChatSessionDetail(
+        **summary.model_dump(),
+        messages=messages,
+    )
+
+
+async def update_session_state_fields(
+    session: Session,
+    updates: dict[str, Any],
+) -> Session:
+    """
+    Persists state updates (such as `title` or `selected_video_ids`) into
+    ADK's FirestoreSessionService via a lightweight state-delta Event.
+    """
+    actions_with_update = EventActions(state_delta=updates)
+    system_event = Event(
+        invocation_id=str(uuid4()),
+        author="system",
+        actions=actions_with_update,
+        timestamp=time.time(),
+    )
+    await session_service.append_event(session=session, event=system_event)
+    return session
