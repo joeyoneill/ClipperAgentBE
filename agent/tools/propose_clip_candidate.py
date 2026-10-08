@@ -83,6 +83,12 @@ def propose_clip_candidate(
     vdata = allowed_videos[video_id]
     start_sec = round(float(start_sec), 2)
     end_sec = round(float(end_sec), 2)
+    if end_sec <= start_sec:
+        err_msg = f"Invalid clip bounds: start_sec ({start_sec}) must be < end_sec ({end_sec})."
+        return ProposeClipCandidateResponse(
+            summary=ProposeClipSummary(error=err_msg),
+            error=err_msg,
+        )
 
     # Fetch overlapping 30s segments to extract exact word timestamps for the clip
     first_seg_idx = max(0, int(start_sec // 30))

@@ -111,15 +111,26 @@ def session_to_chat_detail(session: Session) -> ChatSessionDetail:
         ev_dt = _ts_to_datetime(ev.timestamp)
 
         # Check if this event marks the current turn as interrupted
-        if (
+        is_aborted_event = ev.error_code == "INVOCATION_ABORTED" or bool(
             ev.actions
             and ev.actions.state_delta
             and ev.actions.state_delta.get("last_turn_interrupted")
-            and current_model_msg is not None
-        ):
-            current_model_msg.interrupted = True
+        )
+        if is_aborted_event:
+            if current_model_msg is None:
+                current_model_msg = ChatMessageModel(
+                    id=ev.id or str(uuid4()),
+                    role="model",
+                    text="",
+                    trace=[],
+                    clip_candidates=[],
+                    interrupted=True,
+                    created_at=ev_dt,
+                )
+            else:
+                current_model_msg.interrupted = True
 
-        # Skip pure state-delta / system events that have no content parts
+        # Skip pure state-delta / system / empty abort events that have no content parts
         if ev.author == "system" or not ev.content or not ev.content.parts:
             continue
 
@@ -197,12 +208,13 @@ def session_to_chat_detail(session: Session) -> ChatSessionDetail:
             elif part.function_response:
                 fr = part.function_response
                 resp_dict = unwrap_tool_response(fr.response)
+                step_prefix = "ABORTED" if is_aborted_event else "COMPLETED"
 
                 current_model_msg.trace.append(
                     AgentTraceStep(
                         id=fr.id or str(uuid4()),
                         step_type="TOOL_RESULT",
-                        title=f"COMPLETED {fr.name}",
+                        title=f"{step_prefix} {fr.name}",
                         tool_name=fr.name,
                         tool_summary=resp_dict.get("summary") or resp_dict,
                         created_at=ev_dt,
@@ -210,7 +222,7 @@ def session_to_chat_detail(session: Session) -> ChatSessionDetail:
                 )
 
                 # Collect ClipCandidate cards; we batch-sign their URLs after the loop
-                if fr.name == "propose_clip_candidate" and "candidate" in resp_dict:
+                if fr.name == "propose_clip_candidate" and resp_dict.get("candidate"):
                     cand = ClipCandidate.model_validate(resp_dict["candidate"])
                     current_model_msg.clip_candidates.append(cand)
                     all_candidates.append(cand)
