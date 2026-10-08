@@ -9,6 +9,7 @@ from google.adk.integrations.firestore.firestore_session_service import (
 )
 from google.adk.sessions.session import Session
 from google.cloud import firestore
+from pydantic import BaseModel
 from typing import Any
 from uuid import uuid4
 import os
@@ -50,6 +51,23 @@ def _ts_to_datetime(ts: float | None) -> datetime:
     if not ts:
         return get_utc_now()
     return datetime.fromtimestamp(ts, tz=timezone.utc)
+
+
+def unwrap_tool_response(raw_response: dict[str, Any] | None) -> dict[str, Any]:
+    """
+    Unwraps ADK's `{'result': ...}` wrapper when a tool returns a Pydantic BaseModel
+    instance directly, returning a normalized plain dict for UI trace & card extraction.
+    """
+    if not raw_response:
+        return {}
+    resp = dict(raw_response)
+    if "result" in resp:
+        inner = resp["result"]
+        if isinstance(inner, BaseModel):
+            return inner.model_dump(mode="json")
+        if isinstance(inner, dict):
+            return inner
+    return resp
 
 
 def session_to_chat_summary(session: Session) -> ChatSessionSummary:
@@ -178,7 +196,7 @@ def session_to_chat_detail(session: Session) -> ChatSessionDetail:
             # C. Tool Result Part
             elif part.function_response:
                 fr = part.function_response
-                resp_dict = dict(fr.response) if fr.response else {}
+                resp_dict = unwrap_tool_response(fr.response)
 
                 current_model_msg.trace.append(
                     AgentTraceStep(
