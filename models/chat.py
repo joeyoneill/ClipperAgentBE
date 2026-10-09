@@ -121,9 +121,7 @@ class WSClientMessage(BaseModel):
     selected_video_ids: list[str] | None = None
 
 
-class WSServerMessage(BaseModel):
-    """Outbound frame from FastAPI WebSocket -> React Frontend."""
-    type: Literal[
+type ServerMessageType = Literal[
         "SESSION_INIT",
         "AGENT_THOUGHT",
         "TRACE_STEP",
@@ -135,4 +133,8 @@ class WSServerMessage(BaseModel):
         "VIDEOS_UPDATED",
         "ERROR",
     ]
+
+class WSServerMessage(BaseModel):
+    """Outbound frame from FastAPI WebSocket -> React Frontend."""
+    type: ServerMessageType
     data: dict[str, Any] = Field(default_factory=dict)
