@@ -3,10 +3,12 @@
 # Imports
 from datetime import datetime, timezone
 from dotenv import load_dotenv
+from fastapi import HTTPException, status
 from google.adk.events import Event, EventActions
 from google.adk.integrations.firestore.firestore_session_service import (
     FirestoreSessionService,
 )
+from google.adk.sessions.base_session_service import GetSessionConfig
 from google.adk.sessions.session import Session
 from google.cloud import firestore
 from pydantic import BaseModel
@@ -281,3 +283,73 @@ async def update_session_state_fields(
     )
     await session_service.append_event(session=session, event=system_event)
     return session
+
+################################################################
+# Chat Session Router Helper Functions
+################################################################
+
+async def get_verified_adk_session(
+    session_id: str,
+    uid: str,
+    include_events: bool = True,
+) -> Session:
+    """
+    Loads a user-scoped session from ADK's FirestoreSessionService.
+    When `include_events=False`, passes `num_recent_events=0` so Firestore
+    skips reading the `events` subcollection (ideal for PATCH and DELETE).
+    """
+    config = None if include_events else GetSessionConfig(num_recent_events=0)
+    try:
+        session = await session_service.get_session(
+            app_name=CHAT_APP_NAME,
+            user_id=uid,
+            session_id=session_id,
+            config=config,
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to fetch chat session from database: {e}",
+        )
+    if not session:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Chat session '{session_id}' not found.",
+        )
+    return session
+
+
+def validate_owned_video_ids(video_ids: list[str], uid: str) -> list[str]:
+    """
+    Verifies that every pinned video_id exists in Firestore, belongs to `uid`,
+    and has status == 'SUCCESSFUL'. Deduplicates while preserving order.
+    """
+    if not video_ids:
+        return []
+    unique_ids = list(dict.fromkeys(video_ids))
+    doc_refs = [
+        db.collection(LFVIDEO_COLLECTION_NAME).document(vid)
+        for vid in unique_ids
+    ]
+    
+    valid_ids: list[str] = []
+    for snap in db.get_all(doc_refs):
+        if not snap.exists:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Pinned video '{snap.id}' not found.",
+            )
+        vdata = snap.to_dict() or {}
+        if vdata.get("uid") != uid:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"You do not have permission to pin video '{snap.id}'.",
+            )
+        if vdata.get("status") != "SUCCESSFUL":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Video '{snap.id}' is not finished processing (status: {vdata.get('status')}).",
+            )
+        valid_ids.append(snap.id)
+    
+    return valid_ids
