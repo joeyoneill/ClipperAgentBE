@@ -114,9 +114,19 @@ class UpdateChatSessionRequest(BaseModel):
 # Chat WebSocket Models
 ################################################################
 
+ClientMessageType = Literal[
+    "AUTH",
+    "USER_MESSAGE",
+    "INTERRUPT",
+    "ADD_CONTEXT",
+    "SET_VIDEOS",
+]
+
 class WSClientMessage(BaseModel):
     """Inbound frame from React Frontend -> FastAPI WebSocket."""
-    type: Literal["USER_MESSAGE", "INTERRUPT", "ADD_CONTEXT", "SET_VIDEOS"]
+    type: ClientMessageType
+    token: str | None = None
+    session_id: str | None = None
     text: str | None = None
     selected_video_ids: list[str] | None = None
 

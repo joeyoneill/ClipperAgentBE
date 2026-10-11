@@ -41,7 +41,10 @@ CHAT_APP_NAME = "clipping_studio"
 ################################################################
 
 session_service = FirestoreSessionService(
-    client=firestore.AsyncClient(project=GCP_PROJECT_ID),
+    client=firestore.AsyncClient(
+        project=GCP_PROJECT_ID,
+        database=db._database
+    ),
     root_collection=CHAT_SESSION_COLLECTION_NAME,
 )
 

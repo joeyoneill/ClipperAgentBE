@@ -9,10 +9,10 @@ from uuid import uuid4
 
 from fastapi import (
     APIRouter,
-    Depends,
     Query,
     WebSocket,
     WebSocketDisconnect,
+    status
 )
 from google.adk import Runner
 from google.adk.agents.run_config import RunConfig
@@ -30,7 +30,7 @@ from models.chat import (
     WSClientMessage,
     WSServerMessage,
 )
-from utils.auth import UserInfo, get_ws_current_user
+from utils.auth import UserInfo, verify_firebase_jwt
 from utils.chat_sessions import (
     CHAT_APP_NAME,
     session_service,
@@ -78,17 +78,48 @@ async def _send_ws_frame(
 async def agent_stream(
     websocket: WebSocket,
     session_id: str | None = Query(default=None),
-    user: UserInfo = Depends(get_ws_current_user),
 ) -> None:
     """
     Websocket connection endpoint to handle agent chat stream
 
-    1. Authentication Handshake
-    2. 
-    3. Agent Loop
+    1. First-Message Authentication Handshake (AUTH frame)
+    2. Session Resolution (SESSION_INIT frame)
+    3. Bidirectional Agent Loop
     """
     await websocket.accept()
 
+    # First-Message Authentication Handshake
+    try:
+        raw_auth = await asyncio.wait_for(websocket.receive_json(), timeout=10.0)
+        auth_msg = WSClientMessage.model_validate(raw_auth)
+        if auth_msg.type != "AUTH" or not auth_msg.token:
+            await _send_ws_frame(
+                websocket,
+                "ERROR",
+                {"message": "First WebSocket frame must be an AUTH message with a token."},
+            )
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+            return
+        user: UserInfo = verify_firebase_jwt(auth_msg.token)
+        if auth_msg.session_id:
+            session_id = auth_msg.session_id
+    except asyncio.TimeoutError:
+        await _send_ws_frame(
+            websocket,
+            "ERROR",
+            {"message": "WebSocket authentication timed out."},
+        )
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+    except Exception as e:
+        await _send_ws_frame(
+            websocket,
+            "ERROR",
+            {"message": f"WebSocket authentication failed: {e}"},
+        )
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+    
     # Resolve or create the user's ADK Session in Firestore
     try:
         loaded_session: Session | None = None
