@@ -129,6 +129,7 @@ def generate_video_signed_read_url(
             expiration=timedelta(minutes=expiration_minutes),
             method="GET",
         )
+    
     # Refresh token for Cloud Run / compute credentials IAM signing
     auth_request = google_requests.Request()
     credentials.refresh(auth_request)
@@ -139,6 +140,7 @@ def generate_video_signed_read_url(
         raise RuntimeError(
             "SIGNING_SERVICE_ACCOUNT_EMAIL must be set in .env when running with user ADC credentials."
         )
+    
     return blob.generate_signed_url(
         version="v4",
         expiration=timedelta(minutes=expiration_minutes),

@@ -10,6 +10,13 @@ from models.misc import WordTimestamp
 from utils.misc import get_utc_now
 
 ################################################################
+# Export / Download Option Types
+################################################################
+
+AspectRatioType = Literal["original", "9:16_crop", "9:16_pad"]
+ResolutionType = Literal["1080p", "720p"]
+
+################################################################
 # Short-Form Video DB Base Model
 ################################################################
 
@@ -38,11 +45,20 @@ class SFVideo(BaseModel):
     status: Literal["PENDING_CUT", "PROCESSING", "SUCCESSFUL", "FAILED"] = "PENDING_CUT"
     is_complete: bool = False
     gcs_uri: str | None = None
+    rendered_variants: dict[str, str] = Field(default_factory=dict)
     error_msg: str | None = None
     
     # Timestamps
     created_at: datetime = Field(default_factory=get_utc_now)
     updated_at: datetime = Field(default_factory=get_utc_now)
+
+
+class SFVideoResponse(SFVideo):
+    """
+    Returned to the React Frontend in the REEL view; includes a signed `preview_url`
+    of the parent LFVideo so the user can preview `#t={start_sec},{end_sec}` inline.
+    """
+    preview_url: str | None = None
 
 ################################################################
 # Short-Form Video REST Endpoint Models
@@ -62,3 +78,32 @@ class SaveClipRequest(BaseModel):
     transcript_text: str
     words: list[WordTimestamp] = Field(default_factory=list)
     rationale: str | None = None
+
+
+class UpdateSFVideoRequest(BaseModel):
+    """
+    Request body for `PATCH /api/sf_videos/{sf_id}`
+    USAGE: Renaming a saved clip title in the Reel view.
+    """
+    title: str
+
+
+class DownloadSFVideoRequest(BaseModel):
+    """
+    Request body for `POST /api/sf_videos/{sf_id}/download`
+    USAGE: On-demand rendering & downloading of a clip with configurable
+    aspect ratio, resolution (1080p Full HD vs 720p Fast), and burned-in subtitles.
+    """
+    aspect_ratio: AspectRatioType = "original"
+    resolution: ResolutionType = "1080p"
+    subtitles: bool = False
+
+
+class DownloadSFVideoResponse(BaseModel):
+    """
+    Response body for `POST /api/sf_videos/{sf_id}/download`
+    """
+    download_url: str
+    filename: str
+    variant_key: str
+    cached: bool
