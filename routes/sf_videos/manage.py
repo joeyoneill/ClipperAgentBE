@@ -34,6 +34,7 @@ from utils.sf_videos import (
     realign_transcript_words,
     render_sf_video_variant,
     sanitize_download_filename,
+    validate_manual_words
 )
 
 # Init Router
@@ -129,13 +130,15 @@ async def update_sf_video_title(
     user: UserInfo = Depends(get_current_user),
 ):
     """
-    Updates a saved short-form clip's title and/or transcript_text in Firestore.
-    When `transcript_text` is edited, word-level timestamps are realigned within
-    `[start_sec, end_sec]` and any cached `*__subs_on` MP4 variants are invalidated.
+    Updates a saved short-form clip's title, simple transcript_text, or manual words[] list.
+    Invalidates cached `*__subs_on` MP4 variants whenever subtitles are modified.
     """
     doc_ref, data = get_user_sf_video_doc(sf_id=sf_id, uid=user.uid)
 
     updates: dict = {}
+    start_sec = float(data.get("start_sec", 0.0))
+    end_sec = float(data.get("end_sec", 0.0))
+    subtitles_modified = False
 
     if payload.title is not None:
         new_title = payload.title.strip()
@@ -146,22 +149,37 @@ async def update_sf_video_title(
             )
         updates["title"] = new_title
 
-    if payload.transcript_text is not None:
+    # Mode B: Advanced Word-by-Word + Timestamp Editing
+    # Default to advanced if advanced & simple both not None at same time
+    if payload.words is not None:
+        try:
+            validated_words = validate_manual_words(
+                words=payload.words,
+                clip_start_sec=start_sec,
+                clip_end_sec=end_sec,
+            )
+        except ValueError as e:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=str(e),
+            )
+        updates["words"] = [w.model_dump() for w in validated_words]
+        updates["transcript_text"] = " ".join(w.word for w in validated_words)
+        subtitles_modified = True
+
+    # Mode A: Simple Paragraph Text Editing
+    elif payload.transcript_text is not None:
         new_transcript = payload.transcript_text.strip()
         if not new_transcript:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Transcript text cannot be empty.",
             )
-
-        start_sec = float(data.get("start_sec", 0.0))
-        end_sec = float(data.get("end_sec", 0.0))
         raw_words = data.get("words") or []
         existing_words = [
             w if isinstance(w, WordTimestamp) else WordTimestamp.model_validate(w)
             for w in raw_words
         ]
-
         try:
             realigned_words = realign_transcript_words(
                 existing_words=existing_words,
@@ -174,11 +192,18 @@ async def update_sf_video_title(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=str(e),
             )
-
-        updates["transcript_text"] = " ".join(w.word for w in realigned_words)
         updates["words"] = [w.model_dump() for w in realigned_words]
+        updates["transcript_text"] = " ".join(w.word for w in realigned_words)
+        subtitles_modified = True
 
-        # Invalidate cached subtitle-burned variants (*__subs_on) so next download re-renders
+    if not updates:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Must provide `title`, `transcript_text`, or `words` to update.",
+        )
+
+    # Clear cached *__subs_on variants from GCS & Firestore if subtitles changed
+    if subtitles_modified:
         rendered_variants = dict(data.get("rendered_variants") or {})
         subs_keys = [k for k in rendered_variants if k.endswith("__subs_on")]
         if subs_keys:
@@ -193,12 +218,6 @@ async def update_sf_video_title(
                         pass
             updates["rendered_variants"] = rendered_variants
 
-    if not updates:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Must provide `title` or `transcript_text` to update.",
-        )
-
     updates["updated_at"] = get_utc_now()
 
     try:
@@ -211,7 +230,6 @@ async def update_sf_video_title(
 
     data.update(updates)
 
-    # Sign parent LFVideo preview_url so the frontend keeps its active video player
     preview_url: str | None = None
     source_vid = data.get("source_video_id")
     if source_vid:

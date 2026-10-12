@@ -86,7 +86,7 @@ class UpdateSFVideoRequest(BaseModel):
     """
     title: str | None = None
     transcript_text: str | None = None
-
+    words: list[WordTimestamp] | None = None
 
 class DownloadSFVideoRequest(BaseModel):
     """

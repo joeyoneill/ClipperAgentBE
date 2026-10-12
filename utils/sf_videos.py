@@ -294,6 +294,64 @@ def realign_transcript_words(
     return aligned
 
 
+def validate_manual_words(
+    words: list[WordTimestamp],
+    clip_start_sec: float,
+    clip_end_sec: float,
+) -> list[WordTimestamp]:
+    """
+    Strictly validates manual word-by-word edits from [ ADVANCED ] word timing subtitle editing mode:
+    1. Every word has non-empty text.
+    2. clip_start_sec <= word.start_sec < word.end_sec <= clip_end_sec.
+    3. Chronological non-overlapping order (word[i].start_sec >= word[i-1].end_sec).
+    """
+    if not words:
+        raise ValueError("Subtitle word list cannot be empty.")
+
+    eps = 0.015  # 15ms float rounding tolerance
+    validated: list[WordTimestamp] = []
+    prev_end = clip_start_sec
+
+    for idx, w in enumerate(words):
+        num = idx + 1
+        text = w.word.strip()
+        if not text:
+            raise ValueError(f"Word #{num} cannot be empty.")
+
+        ws = round(float(w.start_sec), 3)
+        we = round(float(w.end_sec), 3)
+
+        if ws < clip_start_sec - eps or we > clip_end_sec + eps:
+            raise ValueError(
+                f'Word #{num} ("{text}") time ({ws:.2f}s - {we:.2f}s) is outside '
+                f"the clip window ({clip_start_sec:.2f}s - {clip_end_sec:.2f}s)."
+            )
+
+        ws = max(clip_start_sec, min(clip_end_sec, ws))
+        we = max(clip_start_sec, min(clip_end_sec, we))
+
+        if ws >= we:
+            raise ValueError(
+                f'Word #{num} ("{text}") start time ({ws:.2f}s) must be less than end time ({we:.2f}s).'
+            )
+
+        if idx > 0 and ws < prev_end - eps:
+            raise ValueError(
+                f'Word #{num} ("{text}") start time ({ws:.2f}s) overlaps with previous word end time ({prev_end:.2f}s).'
+            )
+
+        ws = max(prev_end, ws) if idx > 0 else ws
+        if ws >= we:
+            raise ValueError(
+                f'Word #{num} ("{text}") has zero duration after aligning with previous word ({ws:.2f}s).'
+            )
+
+        validated.append(WordTimestamp(word=text, start_sec=round(ws, 3), end_sec=round(we, 3)))
+        prev_end = round(we, 3)
+
+    return validated
+
+
 def generate_karaoke_ass_file(
     words: list[WordTimestamp],
     clip_start_sec: float,
