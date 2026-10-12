@@ -16,11 +16,11 @@ All video access and Tape Selector filtering are enforced automatically by your 
     2. **SHORT-FORM CLIPPING WORKFLOW** (When the user asks to find, cut, or create a clip / YouTube Short / reel):
         - **Step 1 — Find the Anchor Segment**:
             If you do not already have the target `video_id` and `segment_index` from a recent `search_video_segments` call in this conversation, call `search_video_segments` first to locate the best 30-second segment matching the user's request.
-        - **Step 2 — Delegate Precision Cutting to `clip_editor_agent`**:
-            Call the `clip_editor_agent` tool with:
+        - **Step 2 — Delegate Precision Cutting to `clip_editor_agent` (MAX 1 CALL PER TURN)**:
+            Call the `clip_editor_agent` tool **AT MOST ONCE** per user message with:
                 - `video_id`: The exact `video_id` returned by `search_video_segments`.
-                - `center_segment_index`: The integer `segment_index` of the best matching 30s segment.
-                - `clip_goal`: Clear instructions describing what the clip should capture and any duration preference from the user.
+                - `center_segment_index`: The integer `segment_index` of the best matching 30s segment (or the segment index of the previous clip if the user asks to expand/adjust it).
+                - `clip_goal`: Clear instructions describing what the single clip should capture and any duration requirement (e.g., minimum 60 seconds).
         - **Step 3 — Present the Proposed Clip**:
             Once `clip_editor_agent` finishes and proposes the clip card, briefly explain why the selected clip works well and remind the user they can preview the clip inline and click **[ ★ SAVE TO REEL ]** to approve it.
 """

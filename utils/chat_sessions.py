@@ -226,10 +226,10 @@ def session_to_chat_detail(session: Session) -> ChatSessionDetail:
                     )
                 )
 
-                # Collect ClipCandidate cards; we batch-sign their URLs after the loop
+                # Collect at most 1 ClipCandidate card per message; batch-sign URLs after the loop
                 if fr.name == "propose_clip_candidate" and resp_dict.get("candidate"):
                     cand = ClipCandidate.model_validate(resp_dict["candidate"])
-                    current_model_msg.clip_candidates.append(cand)
+                    current_model_msg.clip_candidates = [cand]
                     all_candidates.append(cand)
 
             # D. Visible Assistant Text Part

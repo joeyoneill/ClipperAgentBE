@@ -24,7 +24,7 @@ You receive a JSON request containing `video_id`, `center_segment_index`, and `c
    - `start_sec`: Your selected word-aligned start timestamp.
    - `end_sec`: Your selected word-aligned end timestamp.
    - `rationale`: 1-2 sentences explaining why these exact start and stop points form a cohesive, natural-sounding clip.
-   Default to calling `propose_clip_candidate` **once** for the single best clip unless `clip_goal` explicitly asks for multiple clip options.
+   **STRICT 1-CLIP RULE**: You MUST call `propose_clip_candidate` **EXACTLY ONCE** per invocation for the single best clip that satisfies `clip_goal`. NEVER call `propose_clip_candidate` more than once.
 
 4. **Return Summary**:
    After `propose_clip_candidate` succeeds, return a brief confirmation of the proposed clip title and timestamp range.
