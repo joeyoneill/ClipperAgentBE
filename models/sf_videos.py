@@ -82,10 +82,10 @@ class SaveClipRequest(BaseModel):
 
 class UpdateSFVideoRequest(BaseModel):
     """
-    Request body for `PATCH /api/sf_videos/{sf_id}`
-    USAGE: Renaming a saved clip title in the Reel view.
+    Payload for `PATCH /api/sf_videos/{sf_id}` (renaming a clip and/or editing its subtitle transcript).
     """
-    title: str
+    title: str | None = None
+    transcript_text: str | None = None
 
 
 class DownloadSFVideoRequest(BaseModel):

@@ -4,6 +4,7 @@
 # Imports
 import asyncio
 from datetime import timedelta
+import difflib
 from dotenv import load_dotenv
 from fastapi import HTTPException, status
 from google.auth import default as google_auth_default
@@ -168,6 +169,129 @@ def _escape_ffmpeg_filter_path(path: str) -> str:
     normalized = path.replace("\\", "/")
     normalized = normalized.replace(":", r"\:").replace("'", r"\'")
     return f"'{normalized}'"
+
+
+def realign_transcript_words(
+    existing_words: list[WordTimestamp],
+    new_transcript_text: str,
+    clip_start_sec: float,
+    clip_end_sec: float,
+) -> list[WordTimestamp]:
+    """
+    Realigns edited transcript text (typo fixes, rewording, or full foreign-language
+    translation) onto the clip's word-level timestamps while strictly clamping every
+    word within `[clip_start_sec, clip_end_sec]`.
+    """
+    if clip_start_sec < 0 or clip_end_sec <= clip_start_sec:
+        raise ValueError(
+            f"Invalid clip boundaries: start_sec ({clip_start_sec}) must be >= 0 and < end_sec ({clip_end_sec})."
+        )
+
+    new_tokens = [t for t in new_transcript_text.strip().split() if t]
+    if not new_tokens:
+        raise ValueError("Transcript text must contain at least one word.")
+
+    def _distribute_span(
+        tokens: list[str], span_start: float, span_end: float
+    ) -> list[WordTimestamp]:
+        """Splits `[span_start, span_end]` across `tokens` weighted by character length."""
+        if not tokens:
+            return []
+        s = max(clip_start_sec, min(clip_end_sec, span_start))
+        e = max(s + 0.04, min(clip_end_sec, span_end))
+        total_dur = max(0.04, e - s)
+        weights = [max(1, len(tok)) for tok in tokens]
+        total_weight = sum(weights)
+
+        out: list[WordTimestamp] = []
+        cursor = s
+        for idx, (tok, w) in enumerate(zip(tokens, weights)):
+            if idx == len(tokens) - 1:
+                w_end = e
+            else:
+                w_end = cursor + total_dur * (w / total_weight)
+            out.append(
+                WordTimestamp(
+                    word=tok,
+                    start_sec=round(cursor, 3),
+                    end_sec=round(max(cursor + 0.02, w_end), 3),
+                )
+            )
+            cursor = w_end
+        return out
+
+    # If no prior word timestamps exist, distribute evenly across the clip window
+    if not existing_words:
+        return _distribute_span(new_tokens, clip_start_sec, clip_end_sec)
+
+    # Normalize existing words into clip-absolute [clip_start_sec, clip_end_sec] coordinates
+    first_w_start = float(existing_words[0].start_sec)
+    is_relative = first_w_start < clip_start_sec - 1.0
+    norm_existing: list[WordTimestamp] = []
+    for w in existing_words:
+        ws = float(w.start_sec) + (clip_start_sec if is_relative else 0.0)
+        we = float(w.end_sec) + (clip_start_sec if is_relative else 0.0)
+        ws = max(clip_start_sec, min(clip_end_sec, ws))
+        we = max(ws + 0.02, min(clip_end_sec, we))
+        norm_existing.append(WordTimestamp(word=w.word, start_sec=ws, end_sec=we))
+
+    def _clean(tok: str) -> str:
+        return tok.lower().strip(".,!?;:\"'()[]{}")
+
+    old_clean = [_clean(w.word) for w in norm_existing]
+    new_clean = [_clean(t) for t in new_tokens]
+
+    matcher = difflib.SequenceMatcher(None, old_clean, new_clean)
+    aligned: list[WordTimestamp] = []
+
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            for k in range(j2 - j1):
+                src_w = norm_existing[i1 + k]
+                aligned.append(
+                    WordTimestamp(
+                        word=new_tokens[j1 + k],
+                        start_sec=src_w.start_sec,
+                        end_sec=src_w.end_sec,
+                    )
+                )
+        elif tag == "replace":
+            span_start = norm_existing[i1].start_sec
+            span_end = norm_existing[i2 - 1].end_sec
+            aligned.extend(_distribute_span(new_tokens[j1:j2], span_start, span_end))
+        elif tag == "insert":
+            if i1 > 0 and i1 < len(norm_existing):
+                anchor = norm_existing[i1 - 1].end_sec
+                next_start = norm_existing[i1].start_sec
+                span_start = max(clip_start_sec, anchor - 0.15)
+                span_end = min(clip_end_sec, max(next_start, span_start + 0.25))
+            elif i1 == 0:
+                first_s = norm_existing[0].start_sec
+                span_start = clip_start_sec
+                span_end = max(clip_start_sec + 0.2, min(clip_end_sec, first_s))
+            else:
+                last_e = norm_existing[-1].end_sec
+                span_start = min(last_e, clip_end_sec - 0.2)
+                span_end = clip_end_sec
+            aligned.extend(_distribute_span(new_tokens[j1:j2], span_start, span_end))
+        elif tag == "delete":
+            continue
+
+    # Final safety pass: clamp strictly inside [clip_start_sec, clip_end_sec] & enforce monotonicity
+    n = len(aligned)
+    min_step = min(0.02, (clip_end_sec - clip_start_sec) / max(1, n * 2))
+    prev_end = clip_start_sec
+
+    for idx, w in enumerate(aligned):
+        max_allowed_start = clip_end_sec - (n - idx) * min_step
+        ws = max(clip_start_sec, prev_end, min(w.start_sec, max_allowed_start))
+        max_allowed_end = clip_end_sec - (n - 1 - idx) * min_step
+        we = max(ws + min_step, min(w.end_sec, max_allowed_end))
+        w.start_sec = round(ws, 3)
+        w.end_sec = round(we, 3)
+        prev_end = w.end_sec
+
+    return aligned
 
 
 def generate_karaoke_ass_file(

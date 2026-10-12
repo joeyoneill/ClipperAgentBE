@@ -31,6 +31,7 @@ from utils.sf_videos import (
     gcs_blob_exists,
     generate_signed_download_url,
     get_user_sf_video_doc,
+    realign_transcript_words,
     render_sf_video_variant,
     sanitize_download_filename,
 )
@@ -121,53 +122,109 @@ def list_user_sf_videos(
 # PATCH: /api/sf_videos/{sf_id}
 ################################################################
 
-@router.patch("/{sf_id}", response_model=SFVideoResponse, status_code=status.HTTP_200_OK)
-def update_sf_video_title(
+@router.patch("/{sf_id}", response_model=SFVideoResponse)
+async def update_sf_video_title(
     sf_id: str,
     payload: UpdateSFVideoRequest,
     user: UserInfo = Depends(get_current_user),
-) -> SFVideoResponse:
+):
     """
-    Updates a single SF Video's info (title only atm) by ID
+    Updates a saved short-form clip's title and/or transcript_text in Firestore.
+    When `transcript_text` is edited, word-level timestamps are realigned within
+    `[start_sec, end_sec]` and any cached `*__subs_on` MP4 variants are invalidated.
+    """
+    doc_ref, data = get_user_sf_video_doc(sf_id=sf_id, uid=user.uid)
 
-    1. Verifies the clip exists in `sf_videos` and belongs to `user.uid`.
-    2. Updates `title` and `updated_at` in Firestore.
-    3. Returns the updated `SFVideoResponse` (with a freshly signed `preview_url`).
-    """
-    clean_title = payload.title.strip()
-    if not clean_title:
+    updates: dict = {}
+
+    if payload.title is not None:
+        new_title = payload.title.strip()
+        if not new_title:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Clip title cannot be empty.",
+            )
+        updates["title"] = new_title
+
+    if payload.transcript_text is not None:
+        new_transcript = payload.transcript_text.strip()
+        if not new_transcript:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Transcript text cannot be empty.",
+            )
+
+        start_sec = float(data.get("start_sec", 0.0))
+        end_sec = float(data.get("end_sec", 0.0))
+        raw_words = data.get("words") or []
+        existing_words = [
+            w if isinstance(w, WordTimestamp) else WordTimestamp.model_validate(w)
+            for w in raw_words
+        ]
+
+        try:
+            realigned_words = realign_transcript_words(
+                existing_words=existing_words,
+                new_transcript_text=new_transcript,
+                clip_start_sec=start_sec,
+                clip_end_sec=end_sec,
+            )
+        except ValueError as e:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=str(e),
+            )
+
+        updates["transcript_text"] = " ".join(w.word for w in realigned_words)
+        updates["words"] = [w.model_dump() for w in realigned_words]
+
+        # Invalidate cached subtitle-burned variants (*__subs_on) so next download re-renders
+        rendered_variants = dict(data.get("rendered_variants") or {})
+        subs_keys = [k for k in rendered_variants if k.endswith("__subs_on")]
+        if subs_keys:
+            bucket = gcs_client.bucket(GCS_ROOT_BUCKET_NAME)
+            prefix = f"gs://{GCS_ROOT_BUCKET_NAME}/"
+            for k in subs_keys:
+                uri = rendered_variants.pop(k, "")
+                if uri.startswith(prefix):
+                    try:
+                        bucket.blob(uri[len(prefix) :]).delete()
+                    except Exception:
+                        pass
+            updates["rendered_variants"] = rendered_variants
+
+    if not updates:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Clip title cannot be empty.",
+            detail="Must provide `title` or `transcript_text` to update.",
         )
 
-    doc_ref, sf_data = get_user_sf_video_doc(sf_id, user.uid)
-    updates = {
-        "title": clean_title,
-        "updated_at": get_utc_now(),
-    }
+    updates["updated_at"] = get_utc_now()
 
     try:
         doc_ref.update(updates)
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to update clip title: {e}",
+            detail=f"Failed to update clip in Firestore: {e}",
         )
 
+    data.update(updates)
+
+    # Sign parent LFVideo preview_url so the frontend keeps its active video player
     preview_url: str | None = None
-    source_vid = sf_data.get("source_video_id")
+    source_vid = data.get("source_video_id")
     if source_vid:
-        try:
-            _, lf_data = get_user_video_doc(source_vid, user.uid)
-            if lf_data.get("gcs_uri"):
-                preview_url = generate_video_signed_read_url(lf_data["gcs_uri"])
-        except Exception:
-            preview_url = None
+        lf_snap = db.collection(LFVIDEO_COLLECTION_NAME).document(source_vid).get()
+        if lf_snap.exists:
+            lf_data = lf_snap.to_dict() or {}
+            if lf_data.get("uid") == user.uid and lf_data.get("gcs_uri"):
+                try:
+                    preview_url = generate_video_signed_read_url(lf_data["gcs_uri"])
+                except Exception:
+                    pass
 
-    merged = {**sf_data, **updates}
-    return SFVideoResponse(id=sf_id, preview_url=preview_url, **merged)
-
+    return SFVideoResponse(id=sf_id, preview_url=preview_url, **data)
 
 ################################################################
 # DELETE: /api/sf_videos/{sf_id}
