@@ -22,7 +22,7 @@ from google.adk.sessions.session import Session
 from google.genai.types import Content, Part
 
 # Custom Dependencies
-from agent.agent import orchestrator_agent
+from agent.agent import clipping_app, orchestrator_agent
 from models.chat import (
     AgentTraceStep,
     ClipCandidate,
@@ -46,8 +46,7 @@ router = APIRouter(tags=["Chat Stream"])
 
 # Init ADK 2.0 Runner Singleton
 runner = Runner(
-    app_name=CHAT_APP_NAME,
-    agent=orchestrator_agent,
+    app=clipping_app,
     session_service=session_service,
 )
 

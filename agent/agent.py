@@ -4,6 +4,8 @@
 # Imports
 from dotenv import load_dotenv
 from google.adk import Agent
+from google.adk.apps import App
+from google.adk.integrations.model_armor import ModelArmorConfig, ModelArmorPlugin
 from google.genai import types
 from pydantic import BaseModel, Field
 import os
@@ -11,6 +13,7 @@ import os
 # Custom Prompt Imports
 from agent.prompts.clip_editor_agent import get_clip_editor_agent_prompt
 from agent.prompts.orchestrator_agent import get_orchestrator_agent_prompt
+from utils.chat_sessions import CHAT_APP_NAME
 
 # Custom Tool Imports
 from agent.tools.get_expanded_window import get_expanded_segment_window
@@ -89,3 +92,36 @@ orchestrator_agent = Agent(
 
 # Alias expected by `adk web` / `adk run` CLI tools
 root_agent = orchestrator_agent
+
+################################################################
+# ADK App Container with Google Cloud Model Armor Guardrail
+################################################################
+
+def _build_plugins() -> list:
+    template_name = os.getenv("MODEL_ARMOR_TEMPLATE_NAME", "").strip()
+    if not template_name:
+        return []
+    return [
+        ModelArmorPlugin(
+            config=ModelArmorConfig(
+                prompt_template_name=template_name,
+                response_template_name=template_name,
+                input_blocked_message=(
+                    "⚠️ [SECURITY GUARDRAIL] Your request was blocked by Google Cloud "
+                    "Model Armor policy (prompt injection or unsafe content detected). "
+                    "Please ask a question about your uploaded videos or request a short-form clip."
+                ),
+                output_blocked_message=(
+                    "⚠️ [SECURITY GUARDRAIL] The agent response was withheld by Google Cloud "
+                    "Model Armor safety filters."
+                ),
+                block_on_screening_failure=False,
+            )
+        )
+    ]
+
+clipping_app = App(
+    name=CHAT_APP_NAME,
+    root_agent=root_agent,
+    plugins=_build_plugins(),
+)
