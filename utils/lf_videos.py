@@ -20,6 +20,7 @@ GCP_PROJECT_ID = os.environ["GCP_PROJECT_ID"]
 GCP_REGION = os.environ["GCP_REGION"]
 GCS_ROOT_BUCKET_NAME = os.environ["GCS_ROOT_BUCKET_NAME"]
 VIDEO_PROCESSOR_JOB_NAME = os.environ["VIDEO_PROCESSOR_JOB_NAME"]
+SIGNING_SERVICE_ACCOUNT_EMAIL = os.getenv("SIGNING_SERVICE_ACCOUNT_EMAIL")
 
 ################################################################
 # Allowed LF Video File Upload Types
@@ -131,10 +132,17 @@ def generate_video_signed_read_url(
     # Refresh token for Cloud Run / compute credentials IAM signing
     auth_request = google_requests.Request()
     credentials.refresh(auth_request)
+    sa_email = getattr(credentials, "service_account_email", None)
+    if not sa_email or sa_email == "default":
+        sa_email = SIGNING_SERVICE_ACCOUNT_EMAIL
+    if not sa_email:
+        raise RuntimeError(
+            "SIGNING_SERVICE_ACCOUNT_EMAIL must be set in .env when running with user ADC credentials."
+        )
     return blob.generate_signed_url(
         version="v4",
         expiration=timedelta(minutes=expiration_minutes),
         method="GET",
-        service_account_email=getattr(credentials, "service_account_email", None),
+        service_account_email=sa_email,
         access_token=credentials.token,
     )

@@ -122,35 +122,24 @@ async def agent_stream(
     
     # Resolve or create the user's ADK Session in Firestore
     try:
-        loaded_session: Session | None = None
+        session: Session | None = None
+        active_session_id: str | None = None
         if session_id:
-            loaded_session = await session_service.get_session(
+            session = await session_service.get_session(
                 app_name=CHAT_APP_NAME,
                 user_id=user.uid,
                 session_id=session_id,
             )
+            if session:
+                active_session_id = session.id
         
-        if loaded_session is None:
-            initial_state = {
-                "title": "NEW CLIPPING LOG",
-                "selected_video_ids": [],
-                "created_at": get_utc_now().isoformat(),
-            }
-            loaded_session = await session_service.create_session(
-                app_name=CHAT_APP_NAME,
-                user_id=user.uid,
-                session_id=session_id,
-                state=initial_state,
-            )
-        
-        session: Session = loaded_session
-        active_session_id = session.id
-
-        # Send initial session handshake to React frontend
+        # Send initial handshake to React frontend (session is omitted if in draft mode)
         await _send_ws_frame(
             websocket,
             "SESSION_INIT",
-            {"session": session_to_chat_summary(session).model_dump(mode="json")},
+            {"session": session_to_chat_summary(session).model_dump(mode="json")}
+            if session
+            else {},
         )
     except Exception as e:
         await _send_ws_frame(
@@ -192,7 +181,11 @@ async def agent_stream(
             pass
 
         # If interrupted mid-sentence, persist the partial streamed text to Firestore
-        if has_uncommitted_text and streamed_text_buffer.strip():
+        if (
+            has_uncommitted_text
+            and streamed_text_buffer.strip()
+            and active_session_id is not None
+        ):
             try:
                 latest_session = await session_service.get_session(
                     app_name=CHAT_APP_NAME,
@@ -237,6 +230,9 @@ async def agent_stream(
         and text deltas over the WebSocket.
         """
         nonlocal session, streamed_text_buffer, has_uncommitted_text
+        if active_session_id is None or session is None:
+            return
+        sid: str = active_session_id
         streamed_text_buffer = ""
         has_uncommitted_text = False
         
@@ -245,13 +241,17 @@ async def agent_stream(
             current_session = await session_service.get_session(
                 app_name=CHAT_APP_NAME,
                 user_id=user.uid,
-                session_id=active_session_id,
+                session_id=sid,
             )
             if current_session:
                 session = current_session
             
             state_delta: dict[str, Any] = {"last_turn_interrupted": False}
-            current_title = (session.state or {}).get("title", "NEW CLIPPING LOG")
+            current_title = (
+                (session.state or {}).get("title", "NEW CLIPPING LOG")
+                if session
+                else "NEW CLIPPING LOG"
+            )
             if current_title == "NEW CLIPPING LOG":
                 cleaned = " ".join(user_text.strip().split())
                 new_title = (cleaned[:42] + "...") if len(cleaned) > 45 else cleaned
@@ -265,7 +265,7 @@ async def agent_stream(
             
             async for ev in runner.run_async(
                 user_id=user.uid,
-                session_id=active_session_id,
+                session_id=sid,
                 new_message=user_msg,
                 state_delta=state_delta,
                 run_config=RunConfig(streaming_mode=StreamingMode.SSE)
@@ -377,7 +377,7 @@ async def agent_stream(
                 updated_session = await session_service.get_session(
                     app_name=CHAT_APP_NAME,
                     user_id=user.uid,
-                    session_id=active_session_id,
+                    session_id=sid,
                 )
                 if updated_session:
                     session = updated_session
@@ -386,8 +386,12 @@ async def agent_stream(
                     websocket,
                     "TURN_COMPLETE",
                     {
-                        "session_id": active_session_id,
-                        "session": session_to_chat_summary(session).model_dump(mode="json"),
+                        "session_id": sid,
+                        "session": (
+                            session_to_chat_summary(session).model_dump(mode="json")
+                            if session
+                            else None
+                        ),
                     },
                 )
         except asyncio.CancelledError:
@@ -415,17 +419,40 @@ async def agent_stream(
                 )
                 continue
             
-            # USER_MESSAGE: Start a new conversational turn
+            # USER_MESSAGE: Start a new conversational turn (lazily creating session on first message)
             if client_msg.type == "USER_MESSAGE":
                 text = (client_msg.text or "").strip()
                 if not text:
                     continue
                 await _stop_active_turn()
-                if client_msg.selected_video_ids is not None:
-                    verified_vids = validate_owned_video_ids(
-                        client_msg.selected_video_ids,
-                        user.uid
+                verified_vids = (
+                    validate_owned_video_ids(client_msg.selected_video_ids, user.uid)
+                    if client_msg.selected_video_ids is not None
+                    else []
+                )
+                
+                # Lazy creation: persist the session in Firestore on the very first message
+                if session is None or active_session_id is None:
+                    cleaned = " ".join(text.split())
+                    first_title = (cleaned[:42] + "...") if len(cleaned) > 45 else cleaned
+                    initial_state = {
+                        "title": first_title or "NEW CLIPPING LOG",
+                        "selected_video_ids": verified_vids,
+                        "created_at": get_utc_now().isoformat(),
+                    }
+                    session = await session_service.create_session(
+                        app_name=CHAT_APP_NAME,
+                        user_id=user.uid,
+                        state=initial_state,
                     )
+                    active_session_id = session.id
+                    await _send_ws_frame(
+                        websocket,
+                        "SESSION_INIT",
+                        {"session": session_to_chat_summary(session).model_dump(mode="json")},
+                    )
+                
+                elif client_msg.selected_video_ids is not None:
                     latest_session = await session_service.get_session(
                         app_name=CHAT_APP_NAME,
                         user_id=user.uid,
@@ -475,16 +502,18 @@ async def agent_stream(
                         client_msg.selected_video_ids or [],
                         user.uid,
                     )
-                    latest_session = await session_service.get_session(
-                        app_name=CHAT_APP_NAME,
-                        user_id=user.uid,
-                        session_id=active_session_id,
-                    )
-                    if latest_session:
-                        session = await update_session_state_fields(
-                            latest_session,
-                            {"selected_video_ids": verified_vids},
+                    if active_session_id is not None:
+                        latest_session = await session_service.get_session(
+                            app_name=CHAT_APP_NAME,
+                            user_id=user.uid,
+                            session_id=active_session_id,
                         )
+                        if latest_session:
+                            session = await update_session_state_fields(
+                                latest_session,
+                                {"selected_video_ids": verified_vids},
+                            )
+                    
                     await _send_ws_frame(
                         websocket,
                         "VIDEOS_UPDATED",

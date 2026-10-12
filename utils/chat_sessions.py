@@ -256,8 +256,8 @@ def session_to_chat_detail(session: Session) -> ChatSessionDetail:
                     signed_url_map[snap.id] = generate_video_signed_read_url(
                         vdata["gcs_uri"]
                     )
-                except Exception:
-                    pass
+                except Exception as e:
+                    print(f"[ERROR] Failed to refresh signed URL for video {snap.id}: {e}")
 
         for cand in all_candidates:
             if cand.video_id in signed_url_map:

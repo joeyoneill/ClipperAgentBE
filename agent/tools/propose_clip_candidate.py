@@ -123,7 +123,8 @@ def propose_clip_candidate(
     if vdata.get("gcs_uri"):
         try:
             preview_url = generate_video_signed_read_url(vdata["gcs_uri"])
-        except Exception:
+        except Exception as e:
+            print(f"[ERROR] Failed to sign preview URL in propose_clip_candidate: {e}")
             preview_url = None
 
     # Proposed Clip Candidate Info
