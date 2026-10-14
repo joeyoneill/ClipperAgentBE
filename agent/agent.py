@@ -14,6 +14,7 @@ import os
 from agent.prompts.clip_editor_agent import get_clip_editor_agent_prompt
 from agent.prompts.orchestrator_agent import get_orchestrator_agent_prompt
 from utils.chat_sessions import CHAT_APP_NAME
+from utils.secret_manager import load_secrets_into_env
 
 # Custom Tool Imports
 from agent.tools.get_expanded_window import get_expanded_segment_window
@@ -23,6 +24,7 @@ from agent.tools.search_video_segments import search_video_segments
 
 # Load ENV Vars
 load_dotenv()
+load_secrets_into_env()
 
 ################################################################
 # Schema-Validated Delegation Input for Clip Editor Sub-Agent

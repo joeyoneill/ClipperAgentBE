@@ -11,6 +11,7 @@ dependencies = [
     "google-cloud-firestore>=2.33.0",
     "google-cloud-modelarmor>=0.7.2",
     "google-cloud-run>=0.16.2",
+    "google-cloud-secret-manager>=2.31.0",
     "google-cloud-storage>=3.15.1",
     "imageio-ffmpeg>=0.6.0",
     "python-dotenv>=1.2.3",
