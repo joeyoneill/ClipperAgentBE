@@ -27,6 +27,7 @@ from storage import gcs_client
 from utils.auth import UserInfo, get_current_user
 from utils.lf_videos import generate_video_signed_read_url, get_user_video_doc
 from utils.misc import get_utc_now
+from utils.observability import log_analytics_event
 from utils.sf_videos import (
     gcs_blob_exists,
     generate_signed_download_url,
@@ -329,6 +330,16 @@ async def download_sf_video(
                 gcs_uri=cached_gcs_uri,
                 download_filename=download_filename,
             )
+            log_analytics_event(
+                "SF_EXPORT_VARIANT",
+                uid=user.uid,
+                sf_id=sf_id,
+                variant_key=variant_key,
+                aspect_ratio=payload.aspect_ratio,
+                resolution=payload.resolution,
+                subtitles=payload.subtitles,
+                cached=True,
+            )
             return DownloadSFVideoResponse(
                 download_url=signed_url,
                 filename=download_filename,
@@ -410,6 +421,17 @@ async def download_sf_video(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"Failed to generate signed download URL: {e}",
         )
+
+    log_analytics_event(
+        "SF_EXPORT_VARIANT",
+        uid=user.uid,
+        sf_id=sf_id,
+        variant_key=variant_key,
+        aspect_ratio=payload.aspect_ratio,
+        resolution=payload.resolution,
+        subtitles=payload.subtitles,
+        cached=False,
+    )
 
     return DownloadSFVideoResponse(
         download_url=signed_url,

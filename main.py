@@ -2,19 +2,23 @@
 
 # Imports
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 import os
 
 # Custom Dependencies
 from routes import router as management_router
+from utils.observability import setup_observability
 
 # Load Env Vars
 load_dotenv()
 
 # Init FastAPI
 app = FastAPI()
+
+# Setup Observability for logging/monitoring/trace
+setup_observability("clipper-agent-backend")
 
 # Enable CORS
 FE_URL = os.environ['FRONTEND_URL']
@@ -34,13 +38,7 @@ app.include_router(management_router)
 def redirect():
     return RedirectResponse("/docs")
 
-# auth test
-from fastapi import Depends
-from utils.auth import UserInfo, get_current_user
-@app.post("/auth_test")
-def auth_test(user: UserInfo = Depends(get_current_user)):
-    return {
-        "message": f"Hello, {user.email}",
-        "user_id": user.uid,
-        "user_info": user
-    }
+# Health Check
+@app.get("/health", tags=["Health"])
+def health_check() -> dict[str, str]:
+    return {"status": "ok"}

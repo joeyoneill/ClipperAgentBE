@@ -40,9 +40,13 @@ from utils.chat_sessions import (
     validate_owned_video_ids
 )
 from utils.misc import get_utc_now
+from utils.observability import get_tracer, log_analytics_event
 
 # Init Router
 router = APIRouter(tags=["Chat Stream"])
+
+# Init Tracer
+tracer = get_tracer(__name__)
 
 # Init ADK 2.0 Runner Singleton
 runner = Runner(
@@ -261,116 +265,128 @@ async def agent_stream(
                 role="user",
                 parts=[Part(text=user_text)],
             )
-            
-            async for ev in runner.run_async(
-                user_id=user.uid,
-                session_id=sid,
-                new_message=user_msg,
-                state_delta=state_delta,
-                run_config=RunConfig(streaming_mode=StreamingMode.SSE)
+            turn_start = time.perf_counter()
+
+            with tracer.start_as_current_span(
+                "websocket.chat_turn",
+                attributes={
+                    "user.id": user.uid,
+                    "session.id": sid,
+                    "chat.selected_video_count": len(
+                        (session.state or {}).get("selected_video_ids", [])
+                    ),
+                },
             ):
-                if abort_signal.is_set():
-                    break
-                
-                if not ev.content or not ev.content.parts:
-                    continue
-                
-                ev_dt = get_utc_now()
-                
-                # Partial Streaming Events (Token & Thought Deltas)
-                if ev.partial:
-                    for part in ev.content.parts:
-                        if getattr(part, "thought", False) and part.text:
-                            await _send_ws_frame(
-                                websocket,
-                                "AGENT_THOUGHT",
-                                {"delta": part.text, "branch": ev.branch},
-                            )
-                        elif part.text and not ev.branch:
-                            streamed_text_buffer += part.text
-                            has_uncommitted_text = True
-                            await _send_ws_frame(
-                                websocket,
-                                "AGENT_TOKEN",
-                                {"delta": part.text},
-                            )
-                    continue
-                
-                # Non-Partial Committed Events (Traces, Tool Calls, Final Text)
-                if ev.author in ("user", "system"):
-                    continue
-                
-                for part in ev.content.parts:
-                    # Finalized Thought Trace Step
-                    if getattr(part, "thought", False) and part.text:
-                        step = AgentTraceStep(
-                            id=str(uuid4()),
-                            step_type="THOUGHT",
-                            title="AGENT REASONING",
-                            content=part.text,
-                            created_at=ev_dt,
-                        )
-                        await _send_ws_frame(
-                            websocket,
-                            "TRACE_STEP",
-                            {"step": step.model_dump(mode="json")},
-                        )
-                    
-                    # Tool Call Trace Step
-                    elif part.function_call:
-                        fc = part.function_call
-                        step = AgentTraceStep(
-                            id=fc.id or str(uuid4()),
-                            step_type="TOOL_CALL",
-                            title=f"CALLING {fc.name}",
-                            tool_name=fc.name,
-                            tool_args=dict(fc.args) if fc.args else {},
-                            created_at=ev_dt,
-                        )
-                        await _send_ws_frame(
-                            websocket,
-                            "TRACE_STEP",
-                            {"step": step.model_dump(mode="json")},
-                        )
-                    
-                    # Tool Result Trace Step + ClipCandidate Extraction
-                    elif part.function_response:
-                        fr = part.function_response
-                        resp_dict = unwrap_tool_response(fr.response)
-                        step = AgentTraceStep(
-                            id=fr.id or str(uuid4()),
-                            step_type="TOOL_RESULT",
-                            title=f"COMPLETED {fr.name}",
-                            tool_name=fr.name,
-                            tool_summary=resp_dict.get("summary") or resp_dict,
-                            created_at=ev_dt,
-                        )
-                        await _send_ws_frame(
-                            websocket,
-                            "TRACE_STEP",
-                            {"step": step.model_dump(mode="json")},
-                        )
-                        
-                        # Emit structured ClipCandidate card immediately if proposed
-                        if fr.name == "propose_clip_candidate" and resp_dict.get("candidate"):
-                            cand = ClipCandidate.model_validate(resp_dict["candidate"])
-                            await _send_ws_frame(
-                                websocket,
-                                "CLIP_CANDIDATE",
-                                {"candidate": cand.model_dump(mode="json")},
-                            )
-                    
-                    # Final Committed Visible Text (root agent only)
-                    elif part.text and not ev.branch:
-                        # Fallback if the model emitted text without prior partial chunks
-                        if not streamed_text_buffer:
-                            await _send_ws_frame(
-                                websocket,
-                                "AGENT_TOKEN",
-                                {"delta": part.text},
-                            )
-                        has_uncommitted_text = False
             
+                async for ev in runner.run_async(
+                    user_id=user.uid,
+                    session_id=sid,
+                    new_message=user_msg,
+                    state_delta=state_delta,
+                    run_config=RunConfig(streaming_mode=StreamingMode.SSE)
+                ):
+                    if abort_signal.is_set():
+                        break
+                    
+                    if not ev.content or not ev.content.parts:
+                        continue
+                    
+                    ev_dt = get_utc_now()
+                    
+                    # Partial Streaming Events (Token & Thought Deltas)
+                    if ev.partial:
+                        for part in ev.content.parts:
+                            if getattr(part, "thought", False) and part.text:
+                                await _send_ws_frame(
+                                    websocket,
+                                    "AGENT_THOUGHT",
+                                    {"delta": part.text, "branch": ev.branch},
+                                )
+                            elif part.text and not ev.branch:
+                                streamed_text_buffer += part.text
+                                has_uncommitted_text = True
+                                await _send_ws_frame(
+                                    websocket,
+                                    "AGENT_TOKEN",
+                                    {"delta": part.text},
+                                )
+                        continue
+                    
+                    # Non-Partial Committed Events (Traces, Tool Calls, Final Text)
+                    if ev.author in ("user", "system"):
+                        continue
+                    
+                    for part in ev.content.parts:
+                        # Finalized Thought Trace Step
+                        if getattr(part, "thought", False) and part.text:
+                            step = AgentTraceStep(
+                                id=str(uuid4()),
+                                step_type="THOUGHT",
+                                title="AGENT REASONING",
+                                content=part.text,
+                                created_at=ev_dt,
+                            )
+                            await _send_ws_frame(
+                                websocket,
+                                "TRACE_STEP",
+                                {"step": step.model_dump(mode="json")},
+                            )
+                        
+                        # Tool Call Trace Step
+                        elif part.function_call:
+                            fc = part.function_call
+                            step = AgentTraceStep(
+                                id=fc.id or str(uuid4()),
+                                step_type="TOOL_CALL",
+                                title=f"CALLING {fc.name}",
+                                tool_name=fc.name,
+                                tool_args=dict(fc.args) if fc.args else {},
+                                created_at=ev_dt,
+                            )
+                            await _send_ws_frame(
+                                websocket,
+                                "TRACE_STEP",
+                                {"step": step.model_dump(mode="json")},
+                            )
+                        
+                        # Tool Result Trace Step + ClipCandidate Extraction
+                        elif part.function_response:
+                            fr = part.function_response
+                            resp_dict = unwrap_tool_response(fr.response)
+                            step = AgentTraceStep(
+                                id=fr.id or str(uuid4()),
+                                step_type="TOOL_RESULT",
+                                title=f"COMPLETED {fr.name}",
+                                tool_name=fr.name,
+                                tool_summary=resp_dict.get("summary") or resp_dict,
+                                created_at=ev_dt,
+                            )
+                            await _send_ws_frame(
+                                websocket,
+                                "TRACE_STEP",
+                                {"step": step.model_dump(mode="json")},
+                            )
+                            
+                            # Emit structured ClipCandidate card immediately if proposed
+                            if fr.name == "propose_clip_candidate" and resp_dict.get("candidate"):
+                                cand = ClipCandidate.model_validate(resp_dict["candidate"])
+                                await _send_ws_frame(
+                                    websocket,
+                                    "CLIP_CANDIDATE",
+                                    {"candidate": cand.model_dump(mode="json")},
+                                )
+                        
+                        # Final Committed Visible Text (root agent only)
+                        elif part.text and not ev.branch:
+                            # Fallback if the model emitted text without prior partial chunks
+                            if not streamed_text_buffer:
+                                await _send_ws_frame(
+                                    websocket,
+                                    "AGENT_TOKEN",
+                                    {"delta": part.text},
+                                )
+                            has_uncommitted_text = False
+                
             # If the turn completed without being aborted, notify the client
             if not abort_signal.is_set():
                 updated_session = await session_service.get_session(
@@ -380,6 +396,14 @@ async def agent_stream(
                 )
                 if updated_session:
                     session = updated_session
+
+                # Observability
+                log_analytics_event(
+                    "AGENT_TURN_METRICS",
+                    uid=user.uid,
+                    session_id=sid,
+                    duration_ms=round((time.perf_counter() - turn_start) * 1000.0, 1),
+                )
                 
                 await _send_ws_frame(
                     websocket,
