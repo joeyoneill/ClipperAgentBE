@@ -12,6 +12,7 @@ uv.lock
 
 # Environment variables
 .env
+*.env
 
 # MISC
 scope.md

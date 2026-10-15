@@ -53,3 +53,7 @@ omit = ["*/__pycache__/*"]
 fail_under = 80
 show_missing = true
 
+[tool.ruff.lint]
+select = ["E9", "F63", "F7", "F82"]
+
+

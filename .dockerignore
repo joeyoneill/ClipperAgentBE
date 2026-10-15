@@ -2,7 +2,12 @@
 __pycache__/
 *.pyc
 .env
+*.env
 .git/
 .pytest_cache/
+.coverage
 tests/
+evals/
+docs/
 scope.md
+cloudbuild.yaml
