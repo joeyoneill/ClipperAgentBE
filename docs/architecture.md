@@ -120,7 +120,7 @@ sequenceDiagram
 | Property | Root Agent (`orchestrator_agent`) | Sub-Agent (`clip_editor_agent`) |
 | :--- | :--- | :--- |
 | **Role** | Main `CLIP_AGENT_OS` studio producer & conversational RAG orchestrator | Precision word-boundary video editor |
-| **Model Env Var** | `ORCHESTRATOR_MODEL_NAME` (default `gemini-3.5-flash`) | `CLIPPER_SUBAGENT_MODEL_NAME` (default `gemini-3.5-flash`) |
+| **Model Env Var** | `ORCHESTRATOR_MODEL_NAME` (default `gemini-3.8-flash`) | `CLIPPER_SUBAGENT_MODEL_NAME` (default `gemini-3.8-flash`) |
 | **Execution Mode** | Multi-turn session (`default`) | Isolated single-turn (`mode="single_turn"`) |
 | **Input Schema** | Freeform user chat + WebSocket steering | `ClipEditorInput(video_id, center_segment_index, clip_goal)` |
 | **Temperature** | `0.3` (balanced synthesis & natural producer tone) | `0.1` (deterministic timestamp selection & tool adherence) |

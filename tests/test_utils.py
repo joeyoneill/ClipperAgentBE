@@ -15,7 +15,12 @@ from google.genai.types import Content, FunctionCall, FunctionResponse, Part
 
 from models.chat import ClipCandidate
 from tests.conftest import make_doc_snap, mock_db, mock_gcs
-from utils.auth import get_current_user, get_ws_current_user, verify_firebase_jwt
+from utils.auth import (
+    clear_allowlist_cache,
+    get_current_user,
+    get_ws_current_user,
+    verify_firebase_jwt,
+)
 from utils.chat_sessions import (
     get_verified_adk_session,
     session_to_chat_detail,
@@ -66,6 +71,36 @@ def test_verify_firebase_jwt_and_http_ws_dependencies() -> None:
                 HTTPAuthorizationCredentials(scheme="Bearer", credentials="bad_claims")
             )
         assert exc.value.status_code == 401
+
+    # Firestore allowlist enforcement: approved email passes, unapproved gets 403
+    clear_allowlist_cache()
+    allow_doc_ref = MagicMock()
+    allow_doc_ref.get.return_value = make_doc_snap(
+        "allowlist",
+        {"enabled": True, "emails": ["approved@example.com"]},
+        exists=True,
+    )
+    mock_db.collection.return_value.document.return_value = allow_doc_ref
+
+    with patch(
+        "utils.auth.id_token.verify_firebase_token",
+        return_value={"sub": "u_ok", "email": "APPROVED@example.com"},
+    ):
+        u_ok = get_current_user(
+            HTTPAuthorizationCredentials(scheme="Bearer", credentials="ok_token")
+        )
+        assert u_ok.uid == "u_ok"
+
+    with patch(
+        "utils.auth.id_token.verify_firebase_token",
+        return_value={"sub": "u_blocked", "email": "stranger@example.com"},
+    ):
+        with pytest.raises(HTTPException) as exc_forbidden:
+            get_current_user(
+                HTTPAuthorizationCredentials(scheme="Bearer", credentials="blocked_token")
+            )
+        assert exc_forbidden.value.status_code == 403
+    clear_allowlist_cache()
 
 
 @pytest.mark.asyncio

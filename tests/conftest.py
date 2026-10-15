@@ -69,7 +69,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 import db as db_module  # noqa: E402
 import storage as storage_module  # noqa: E402
 from main import app  # noqa: E402
-from utils.auth import UserInfo, get_current_user  # noqa: E402
+from utils.auth import UserInfo, clear_allowlist_cache, get_current_user  # noqa: E402
 
 # Explicitly typed MagicMock aliases so IDE type-checkers (Pylance/Pyright)
 # recognize `.reset_mock`, `.return_value`, and `.side_effect` on mocked singletons.
@@ -138,7 +138,9 @@ def reset_global_mocks() -> Any:
     """Resets global `db` and `gcs_client` mocks before each test."""
     mock_db.reset_mock(return_value=True, side_effect=True)
     mock_gcs.reset_mock(return_value=True, side_effect=True)
+    clear_allowlist_cache()
     yield
+    clear_allowlist_cache()
     app.dependency_overrides.clear()
 
 

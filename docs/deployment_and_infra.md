@@ -52,7 +52,7 @@ flowchart TB
         GCS["Private Cloud Storage Bucket\n(v4 Signed URLs, CORS, Uniform Access)\nRaw LFVideos, Checkpoints & Cached SFVideos"]
         FS["Firestore Native Database\n(1408-d Flat KNN Vector Indexes)\nlfvideos | lf_video_segments | chat_sessions | sfvideos"]
         MA["Google Cloud Model Armor\n(Layer 2 Guardrail Template)\nPI/Jailbreak, Malicious URI & RAI Filters"]
-        AI["Vertex AI / Gemini API & Speech-to-Text V2\n(gemini-3.5-flash, gemini-embedding-2, STT 'long')"]
+        AI["Vertex AI / Gemini API & Speech-to-Text V2\n(gemini-3.8-flash, gemini-embedding-2, STT 'long')"]
 
         subgraph OPS["Security, Artifacts, Observability & CI/CD"]
             SM["Secret Manager\n(Runtime API Keys)"]
@@ -261,11 +261,13 @@ All runtime settings are injected into the containers by Terraform (`terraform/m
 | `LFVIDEO_SEGMENT_COLLECTION_NAME` | Backend, Processor | Firestore collection for 30-second multimodal vector segments (`lf_video_segments`). |
 | `CHAT_SESSION_COLLECTION_NAME` | Backend | Firestore collection for ADK 2.0 `FirestoreSessionService` sessions (`chat_sessions`). |
 | `SFVIDEO_COLLECTION_NAME` | Backend | Firestore collection for saved short-form Reel clips (`sfvideos`). |
+| `ALLOWLIST_COLLECTION_NAME` | Backend | Firestore collection for the Google SSO email allowlist (`app_config`). |
+| `ALLOWLIST_DOC_ID` | Backend | Firestore document ID inside `ALLOWLIST_COLLECTION_NAME` storing `{"enabled": true, "emails": [...]}` (`allowlist`). |
 | `VIDEO_PROCESSOR_JOB_NAME` | Backend | Name of the Cloud Run Job triggered upon upload completion. |
 | `SIGNING_SERVICE_ACCOUNT_EMAIL` | Backend | Service account email used for keyless IAM `signBlob` v4 Signed URL generation on Cloud Run. |
 | `MODEL_ARMOR_TEMPLATE_NAME` | Backend | Full resource path (`projects/<PROJECT>/locations/<REGION>/templates/<TEMPLATE>`) for `ModelArmorPlugin`. |
-| `ORCHESTRATOR_MODEL_NAME` | Backend | Gemini model identifier for the root `orchestrator_agent` (default `gemini-3.5-flash`). |
-| `CLIPPER_SUBAGENT_MODEL_NAME` | Backend | Gemini model identifier for the single-turn `clip_editor_agent` (default `gemini-3.5-flash`). |
+| `ORCHESTRATOR_MODEL_NAME` | Backend | Gemini model identifier for the root `orchestrator_agent` (default `gemini-3.8-flash`). |
+| `CLIPPER_SUBAGENT_MODEL_NAME` | Backend | Gemini model identifier for the single-turn `clip_editor_agent` (default `gemini-3.8-flash`). |
 | `EMBEDDING_MODEL_NAME` | Backend, Processor | Multimodal embedding model identifier (`gemini-embedding-2` at `1408` dimensions). |
 | `FRONTEND_URL` | Backend | Comma-separated list of allowed CORS origins (`http://localhost:5173,http://localhost:8080,<PUBLIC_FRONTEND_URL>`). |
 | `GEMINI_API_KEY` | Backend, Processor | API key mounted at runtime from Google Cloud Secret Manager (`secret_key_ref`). |

@@ -1,6 +1,6 @@
 # ==============================================================================
 # Backend .gcloudignore (capstone_be)
-# Excludes local .env, .venv, and caches while keeping tests/, evals/, and uv.lock
+# Excludes local .env, .venv, corp-proxy uv.lock, and caches while keeping tests/ and evals/
 # for Cloud Build Step 2 (uv sync --dev && uv run pytest -v --cov).
 # ==============================================================================
 
@@ -8,6 +8,7 @@
 .DS_Store
 .git/
 .venv/
+uv.lock
 __pycache__/
 *.py[oc]
 .pytest_cache/
