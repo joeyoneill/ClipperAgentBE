@@ -21,10 +21,10 @@ Welcome to the technical documentation hub for **`capstone_be`** — the FastAPI
 | **[`testing.md`](./testing.md)** | Completed | Unit & integration test suite (`tests/`), offline GCP client isolation, subtitle word-timing math verification, WebSocket/REST route testing, and `>80%` coverage guide. |
 | **[`evaluations.md`](./evaluations.md)** | Completed | Automated AI Evaluation Suite (`evals/`), `golden_dataset.json` schema, North Star metrics (`Recall@5`, `Precision@5`, Boundary Hygiene, 2-Layer Guardrail Block Rate, and Rubric Judge). |
 
-### 3. Architecture & Operations (Planned)
+### 3. Architecture & Operations
 | Document | Status | Description |
 | :--- | :---: | :--- |
-| *`architecture.md`* | *Planned* | System architecture, ADK 2.0 multi-agent topology (`orchestrator_agent` + single-turn `clip_editor_agent`), and Architecture Decision Records (ADRs). |
+| **[`architecture.md`](./architecture.md)** | Completed | System architecture, ADK 2.0 multi-agent topology (`orchestrator_agent` + single-turn `clip_editor_agent`), and Architecture Decision Records (ADRs). |
 | *`deployment_and_infra.md`* | *Planned* | GCP infrastructure (`clipper-vpc`, Cloud Run Services & Jobs, Firestore KNN vector indexes, Model Armor, Secret Manager, and Cloud Trace observability). |
 
 ---
