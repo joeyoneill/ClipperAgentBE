@@ -25,7 +25,7 @@ Welcome to the technical documentation hub for **`capstone_be`** — the FastAPI
 | Document | Status | Description |
 | :--- | :---: | :--- |
 | **[`architecture.md`](./architecture.md)** | Completed | System architecture, ADK 2.0 multi-agent topology (`orchestrator_agent` + single-turn `clip_editor_agent`), and Architecture Decision Records (ADRs). |
-| *`deployment_and_infra.md`* | *Planned* | GCP infrastructure (`clipper-vpc`, Cloud Run Services & Jobs, Firestore KNN vector indexes, Model Armor, Secret Manager, and Cloud Trace observability). |
+| **[`deployment_and_infra.md`](./deployment_and_infra.md)** | Completed | GCP infrastructure (segmented VPC networking, Cloud Run Services & Jobs, Firestore KNN vector indexes, Model Armor, Secret Manager, and Cloud Trace observability). |
 
 ---
 

@@ -20,7 +20,7 @@ This document details the end-to-end system architecture, Google ADK 2.0 multi-a
 | :--- | :--- |
 | **1. Responsive UX** | Decouples heavy video ingestion and transcoding from the FastAPI server using direct-to-GCS v4 Signed URLs, asynchronous Cloud Run Jobs, bidirectional WebSocket streaming (`WS /api/chat/stream`), live mid-turn `INTERRUPT` / `ADD_CONTEXT` controls, and instant `#t=start,end` media-fragment clip previews. |
 | **2. Modularity & Model Swappability** | Separates conversational RAG orchestration (`orchestrator_agent`) from precision timestamp cutting (`clip_editor_agent`), equips them with four discrete tools, and externalizes all model identifiers (`ORCHESTRATOR_MODEL_NAME`, `CLIPPER_SUBAGENT_MODEL_NAME`, `EMBEDDING_MODEL_NAME`) into environment variables and Terraform variables. |
-| **3. Modular Parallel Ingestion** | Executes long-form video indexing in an isolated `capstone-video-processor` Cloud Run Job that runs FFmpeg `16kHz` audio extraction + 6-way parallel Cloud Speech-to-Text V2 (`long`) concurrently with 8-way parallel 30-second multimodal `gemini-embedding-2` (`1408d`) indexing. |
+| **3. Modular Parallel Ingestion** | Executes long-form video indexing in an isolated Video Processor Cloud Run Job that runs FFmpeg `16kHz` audio extraction + 6-way parallel Cloud Speech-to-Text V2 (`long`) concurrently with 8-way parallel 30-second multimodal `gemini-embedding-2` (`1408d`) indexing. |
 | **4. Token & Compute Cost Optimization** | Keeps system prompts and tool signatures 100% static across turns (reading `uid` and `selected_video_ids` from `ToolContext`) to maximize Gemini prefix cache hits; isolates 150-second word-timestamp windows inside `clip_editor_agent` (`mode="single_turn"`); and defers FFmpeg rendering via `PENDING_CUT` state and `rendered_variants` caching. |
 | **5. Agentic Observability & Evaluation** | Exports OpenTelemetry spans to Google Cloud Trace (`CloudTraceSpanExporter`), correlates structured JSON logs (`logging.googleapis.com/trace`), streams live reasoning and tool traces to the UI's `AGENT TRACE` drawer, and validates North Star KPIs via an automated evaluation suite (`evals/`). |
 
@@ -38,7 +38,7 @@ The platform is organized around four cohesive studio workflows connecting the R
    - The React client uploads the raw binary directly to GCS with real-time progress reporting, completely bypassing FastAPI memory and Cloud Run request payload limits.
    - If the transfer fails, `POST /api/lf_videos/upload/{vid}/failed` marks the document `FAILED`.
 3. **Completion & Job Dispatch (`POST /api/lf_videos/upload/{vid}/complete`)**:
-   - Verifies the object exists in GCS, transitions the `lfvideos` document to `status = "PROCESSING"`, and triggers `capstone-video-processor` via `google.cloud.run_v2.JobsClient.run_job` passing `--video-id <vid> --uid <uid>`.
+   - Verifies the object exists in GCS, transitions the `lfvideos` document to `status = "PROCESSING"`, and triggers the Video Processor Cloud Run Job via `google.cloud.run_v2.JobsClient.run_job` passing `--video-id <vid> --uid <uid>`.
 4. **Parallel Cloud Run Job Execution (`capstone_video_processor/main.py`)**:
    - **Branch A — Word-Level Audio Transcription (`utils/audio_transcriber.py`)**:
      - Checks GCS for an existing `transcript_checkpoint.json` to make retries idempotent.
@@ -170,7 +170,7 @@ flowchart LR
    - Enforces the `STRICT DOMAIN SCOPE & OFF-TOPIC REFUSAL POLICY` directly in `orchestrator_agent`.
    - Immediately refuses benign out-of-domain prompts (e.g., writing Python code, math homework, cooking recipes, general trivia, or system prompt inspection) in the `CLIP_AGENT_OS` producer persona with **zero tool calls**.
 2. **Layer 2 — Google Cloud Model Armor (`agent/agent.py` & `terraform/main.tf`)**:
-   - `_build_plugins()` attaches ADK's `ModelArmorPlugin` to `clipping_app` whenever `MODEL_ARMOR_TEMPLATE_NAME` is configured (`projects/<project>/locations/us-central1/templates/clipping-studio-guardrail`).
+   - `_build_plugins()` attaches ADK's `ModelArmorPlugin` to `clipping_app` whenever `MODEL_ARMOR_TEMPLATE_NAME` is configured (`projects/<PROJECT_ID>/locations/<REGION>/templates/<TEMPLATE_ID>`).
    - Intercepts `before_model_callback`, `after_model_callback`, and `after_tool_callback` to screen user prompts, tool outputs, and model completions against:
      - **Prompt Injection & Jailbreak Filter**: `ENABLED` at `LOW_AND_ABOVE` confidence.
      - **Malicious URI Filter**: `ENABLED`.
@@ -180,14 +180,14 @@ flowchart LR
 - **Cross-Org Identity (`utils/auth.py`)**: Uses Firebase Authentication JWTs verified via `google.oauth2.id_token.verify_firebase_token`. REST routes use `Depends(get_current_user)` (`Authorization: Bearer <token>`), while WebSocket connections require a first-frame `{"type": "AUTH", "token": "..."}` handshake within `10.0` seconds (closing with `WS_1008_POLICY_VIOLATION` on failure).
 - **Zero-Trust Tenant Isolation**: Every Firestore document lookup and vector search enforces `FieldFilter("uid", "==", uid)`, and all GCS object paths are strictly namespaced under `<uid>/...`. Inside ADK tools, `get_allowed_user_videos(tool_context)` reads `uid` and `selected_video_ids` exclusively from server-side `ToolContext` state—never from LLM-supplied arguments.
 - **VPC Network Segmentation (`terraform/main.tf`)**:
-  - `capstone-backend` runs with `ingress = "INGRESS_TRAFFIC_INTERNAL_ONLY"` inside `clipper-vpc` (`10.0.0.0/16` subnet with `private_ip_google_access = true`), unreachable from the public internet except through the VPC-connected `capstone-frontend` Nginx reverse proxy.
-  - Sensitive credentials (`GEMINI_API_KEY`) are stored in **Google Cloud Secret Manager** and injected at runtime (`utils/secret_manager.py` and Cloud Run `secret_key_ref`) using the least-privilege `capstone-backend-sa` service account.
+  - The Backend Cloud Run Service runs with `ingress = "INGRESS_TRAFFIC_INTERNAL_ONLY"` inside a custom segmented VPC (`10.0.0.0/16` subnet with `private_ip_google_access = true`), unreachable from the public internet except through the VPC-connected Frontend Nginx reverse proxy.
+  - Sensitive credentials (`GEMINI_API_KEY`) are stored in **Google Cloud Secret Manager** and injected at runtime (`utils/secret_manager.py` and Cloud Run `secret_key_ref`) using a dedicated least-privilege service account.
 
 ---
 
 ## 5. Data Architecture: Firestore & Cloud Storage
 
-### 5.1 Firestore Native Database (`fde-capstone-db`)
+### 5.1 Firestore Native Database (`<FIRESTORE_DB_NAME>`)
 
 | Collection | Document ID Pattern | Purpose & Key Fields |
 | :--- | :--- | :--- |
@@ -203,10 +203,10 @@ flowchart LR
 - **Vault-Wide Visual KNN Index**: `uid (ASC)` + `video_embedding (Vector 1408d, flat)`
 - **Session & Reel Listing Indexes**: `chat_sessions` (`uid ASC, updated_at DESC`) and `sfvideos` (`uid ASC, created_at DESC`)
 
-### 5.2 Google Cloud Storage Layout (`fde-capstone-storage`)
+### 5.2 Google Cloud Storage Layout (`<GCS_ROOT_BUCKET_NAME>`)
 
 ```text
-gs://fde-capstone-storage/
+gs://<GCS_ROOT_BUCKET_NAME>/
 └── <uid>/
     ├── lf_videos/
     │   └── <video_id>/
@@ -266,7 +266,7 @@ gs://fde-capstone-storage/
 - **Context**: Raw creator streams can be hundreds of megabytes to multiple gigabytes and hours long. Streaming uploads through FastAPI or running FFmpeg audio extraction and multimodal embedding inside the API container would exhaust memory, hit Cloud Run HTTP request timeouts, and degrade WebSocket chat responsiveness. Furthermore, physically slicing a long-form video into dozens of 30-second MP4 files and re-uploading them to GCS before embedding adds significant disk and network I/O overhead.
 - **Decision**:
   1. Offload raw video ingestion directly from the browser to GCS via v4 Signed `PUT` URLs (`POST /api/lf_videos/upload/init`).
-  2. Trigger an isolated **Cloud Run Job** (`capstone-video-processor`, `4 vCPU / 8 GiB`, `3600s` timeout) upon upload completion.
+  2. Trigger an isolated **Cloud Run Job** (`4 vCPU / 8 GiB`, `3600s` timeout) upon upload completion.
   3. Inside the job, run Speech-to-Text V2 (`10`-minute FLAC chunks, 6-way parallel) concurrently with 8-way parallel `gemini-embedding-2` calls that pass `types.VideoMetadata(start_offset=..., end_offset=...)` directly against the single master GCS video URI.
 - **Consequences**:
   - **Positive**: Zero video binary load on the FastAPI server (`100%` non-blocking ingestion) and scale-to-zero (`$0` baseline cost when no jobs are running).
@@ -279,7 +279,7 @@ gs://fde-capstone-storage/
 - **Context**: Users search their video library by spoken dialogue (*"When did he talk about the microphone preamp?"*), visual action (*"Show me when the character dodges the boss's aerial flurry"*), or both simultaneously. Managing a separate dedicated vector database cluster alongside Firestore would increase operational complexity, cost, and synchronization overhead in the sandbox.
 - **Decision**: Store both `text_embedding` (`1408d`) and `video_embedding` (`1408d`) directly on each 30-second chunk document in Firestore (`lf_video_segments`) using Firestore Native composite KNN vector indexes (`DistanceMeasure.COSINE`), and fuse rankings across both modalities in `search_video_segments` using Reciprocal Rank Fusion ($\text{RRF}(d) = \sum \frac{1}{60 + \text{rank}_m(d) + 1}$).
 - **Consequences**:
-  - **Positive**: Single transactional + vector database (`fde-capstone-db`) with atomic pre-filtering on `uid` and `video_id`, zero external vector DB infrastructure to maintain, and strong retrieval accuracy (`100%` Recall@5 on the golden evaluation benchmark).
+  - **Positive**: Single transactional + vector database with atomic pre-filtering on `uid` and `video_id`, zero external vector DB infrastructure to maintain, and strong retrieval accuracy (`100%` Recall@5 on the golden evaluation benchmark).
   - **Trade-off**: Requires composite Firestore vector indexes for both Vault-wide (`uid + embedding`) and Pinned-Tape (`uid + video_id + embedding`) query shapes, which are provisioned declaratively in `terraform/main.tf`.
 
 ---
@@ -289,7 +289,7 @@ gs://fde-capstone-storage/
 - **Context**: Public-facing conversational agents are exposed to two distinct classes of undesirable input: (1) benign off-topic requests from curious users (e.g., coding help, math, trivia) and (2) adversarial attacks (prompt injections, `DAN` jailbreaks, malicious URLs, or Responsible AI policy violations).
 - **Decision**: Implement a two-layer defense-in-depth guardrail pipeline:
   - **Layer 1 (System Prompt Policy)**: Instructs `orchestrator_agent` to refuse out-of-domain requests in its studio producer persona without invoking any tools.
-  - **Layer 2 (`ModelArmorPlugin`)**: Registers Google Cloud Model Armor (`clipping-studio-guardrail`) at the ADK `App` level (`before_model_callback`, `after_model_callback`, `after_tool_callback`) to screen inputs and outputs before/after LLM invocation.
+  - **Layer 2 (`ModelArmorPlugin`)**: Registers Google Cloud Model Armor at the ADK `App` level (`before_model_callback`, `after_model_callback`, `after_tool_callback`) to screen inputs and outputs before/after LLM invocation.
 - **Consequences**:
   - **Positive**: Adversarial prompt injections, jailbreaks, malicious URIs, and harmful content are intercepted at the platform edge by Model Armor with `0` LLM calls and `0` tool calls, while benign off-topic questions receive a helpful, on-brand explanation of `CLIP_AGENT_OS`'s capabilities with `0` tool calls.
 
