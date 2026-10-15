@@ -15,3 +15,7 @@ uv.lock
 
 # MISC
 scope.md
+
+# Testing & Coverage caches
+.coverage
+.pytest_cache/
