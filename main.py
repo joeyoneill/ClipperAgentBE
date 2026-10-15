@@ -21,10 +21,14 @@ app = FastAPI()
 setup_observability("clipper-agent-backend")
 
 # Enable CORS
-FE_URL = os.environ['FRONTEND_URL']
+FE_ORIGINS = [
+    origin.strip().rstrip("/")
+    for origin in os.environ.get("FRONTEND_URL", "http://localhost:5173").split(",")
+    if origin.strip()
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[FE_URL],
+    allow_origins=FE_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
